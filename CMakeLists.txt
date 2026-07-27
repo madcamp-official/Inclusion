@@ -164,6 +164,17 @@ target_link_libraries(Mode2Offline
 
 configure_pitch_shifter(Mode2Offline)
 
+# --- macOS 통합 오디오 기기 도구 -----------------------------------------
+# 기타(오디오 인터페이스)와 목소리(다른 마이크)를 동시에 받으려면 통합 기기가 필요하다.
+# 손으로 만들면 구성이 사람마다 달라져 채널 번호가 어긋나므로 도구로 재현한다.
+# CoreAudio만 쓰는 순수 C 타깃이라 JUCE를 링크하지 않는다.
+if(APPLE)
+    add_executable(Mode2AudioDevice tools/AggregateDevice.c)
+    target_link_libraries(Mode2AudioDevice PRIVATE "-framework CoreAudio" "-framework CoreFoundation")
+    # AudioHardwareCreate/DestroyAggregateDevice는 deprecated로 표시돼 있지만 대체 API가 없다.
+    target_compile_options(Mode2AudioDevice PRIVATE -Wno-deprecated-declarations)
+endif()
+
 # --- Mode 2 unit tests ---------------------------------------------------
 juce_add_console_app(Mode2Tests
     PRODUCT_NAME "Mode2Tests"

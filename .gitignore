@@ -7,3 +7,6 @@ cmake-build-*/
 *.obj
 *.exe
 *.pdb
+
+# macOS
+.DS_Store
