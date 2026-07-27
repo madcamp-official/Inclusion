@@ -22,6 +22,10 @@ public:
     // 진단 녹음 토글. 눌리면 호출자가 실제 녹음 상태를 돌려준다(true = 녹음 중).
     std::function<bool()> onToggleRecording;
 
+    // 같은 입력 조건에서 백엔드를 즉시 A/B한다. 호출자는 오디오 콜백을 잠근 뒤
+    // 선택한 백엔드로 컨트롤러를 재초기화한다.
+    std::function<void(PitchShifterEngine::Backend)> onPitchShifterBackendChanged;
+
     // 하드웨어 왕복 지연을 화면에 표시한다. 블루투스 출력(에어팟 등)은 여기서 수백 ms로
     // 드러나므로, 연주감을 평가할 수 있는 환경인지 바로 판단할 수 있다.
     void setLatencyInfo(double inputMs, double outputMs, double processingMs);
@@ -53,6 +57,9 @@ private:
     juce::Label channelMapLabel;
     juce::ComboBox guitarChannelBox;
     juce::ComboBox vocalChannelBox;
+
+    juce::Label pitchShifterLabel;
+    juce::ComboBox pitchShifterBox;
 
     juce::Label outputLevelLabel;
     double outputLevelProgress = 0.0;

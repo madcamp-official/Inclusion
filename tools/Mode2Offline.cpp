@@ -20,10 +20,12 @@
 //     --bleed=on|off   기타 유입 상쇄(목소리 채널에서 기타를 지운다)
 //     --trip=0.35      출력 트립 임계
 //     --block=512      블록 크기
+//     --shifter=rubberband|soundtouch|world  피치 시프터 A/B (WORLD는 전체 파일 오프라인 처리)
 
 #include <juce_audio_formats/juce_audio_formats.h>
 
 #include "mode2_guitar_vocoder/Mode2Controller.h"
+#include "mode2_guitar_vocoder/WorldVoiceTransformer.h"
 #include "params/Mode2Params.h"
 
 #include <cmath>
@@ -48,6 +50,8 @@ namespace
         bool bleedCancel = mode2::params::defaultBleedCancelEnabled;
         float trip = mode2::params::outputTripThreshold;
         int blockSize = 512;
+        PitchShifterEngine::Backend shifter = PitchShifterEngine::Backend::RubberBand;
+        bool useWorld = false;
     };
 
     bool matchFloat(const juce::String& arg, const char* key, float& out)
@@ -84,7 +88,8 @@ int main(int argc, char* argv[])
     if (argc < 3)
     {
         std::cout << "usage: Mode2Offline <input.wav> <output.wav> [--glide=N --boost=N --volume=N "
-                     "--octave=N --gate=N|off --howlguard=on|off --trip=N --block=N]\n";
+                     "--octave=N --gate=N|off --howlguard=on|off --trip=N --block=N "
+                     "--shifter=rubberband|soundtouch|world]\n";
         return 1;
     }
 
@@ -107,6 +112,26 @@ int main(int argc, char* argv[])
         if (a == "--howlguard=off") { opt.howlGuard = false; continue; }
         if (a == "--bleed=on")      { opt.bleedCancel = true;  continue; }
         if (a == "--bleed=off")     { opt.bleedCancel = false; continue; }
+        if (a == "--shifter=rubberband")
+        {
+            opt.shifter = PitchShifterEngine::Backend::RubberBand;
+            opt.useWorld = false;
+            continue;
+        }
+        if (a == "--shifter=soundtouch")
+        {
+            opt.shifter = PitchShifterEngine::Backend::SoundTouch;
+            opt.useWorld = false;
+            continue;
+        }
+        if (a == "--shifter=world")
+        {
+            // 스트리밍 컨트롤러는 보정량 궤적만 만든다. 아래에서 전체 녹음을 WORLD로
+            // 재합성해 출력 채널을 덮어쓴다.
+            opt.shifter = PitchShifterEngine::Backend::RubberBand;
+            opt.useWorld = true;
+            continue;
+        }
         std::cerr << "알 수 없는 옵션: " << argv[i] << "\n";
         return 1;
     }
@@ -133,7 +158,15 @@ int main(int argc, char* argv[])
     reader->read(&input, 0, numSamples, 0, true, true);
 
     Mode2Controller controller;
+    controller.setPitchShifterBackend(opt.shifter);
     controller.prepare(sampleRate, block);
+    if (! opt.useWorld && controller.getPitchShifterBackend() != opt.shifter)
+    {
+        std::cerr << "요청한 시프터(" << PitchShifterEngine::getBackendName(opt.shifter)
+                  << ")가 빌드에 없어 "
+                  << PitchShifterEngine::getBackendName(controller.getPitchShifterBackend())
+                  << "로 폴백합니다.\n";
+    }
     controller.setVocalInputGain(opt.boost);
     controller.setOutputVolume(opt.volume);
     controller.setTargetOctaveShift(opt.octave);
@@ -161,24 +194,39 @@ int main(int argc, char* argv[])
     // 유입 상쇄가 목소리 채널에서 실제로 얼마나 걷어내고 있는지. 값이 크면 뺄 게 있다는 뜻이고,
     // 유입이 없는 녹음에서도 이 값이 크면 목소리를 깎고 있다는 신호다.
     std::vector<float> cancelDbs;
+    std::vector<float> appliedShiftTrace(static_cast<size_t>(numSamples), 0.0f);
+    std::vector<float> absoluteTargetF0Trace(static_cast<size_t>(numSamples), 0.0f);
     for (int pos = 0; pos < numSamples; pos += block)
     {
         const int n = juce::jmin(block, numSamples - pos);
         controller.processBlock(input.getReadPointer(0, pos),
                                 input.getReadPointer(1, pos),
                                 outL.data(), outR.data(), n);
+        const auto blockState = controller.getDisplayState();
+        std::fill(appliedShiftTrace.begin() + pos,
+                  appliedShiftTrace.begin() + pos + n,
+                  blockState.appliedShiftSemitones);
+        const float absoluteTargetF0 =
+            blockState.hasGuitarTarget
+                ? 440.0f * std::pow(2.0f,
+                                    (blockState.guitarTargetMidi
+                                     + 12.0f * static_cast<float>(opt.octave) - 69.0f)
+                                        / 12.0f)
+                : 0.0f;
+        std::fill(absoluteTargetF0Trace.begin() + pos,
+                  absoluteTargetF0Trace.begin() + pos + n,
+                  absoluteTargetF0);
 
         if (rms(input.getReadPointer(1, pos), n) > 0.005f)
         {
             ++activeBlocks;
-            const auto st = controller.getDisplayState();
-            if (opt.bleedCancel && st.bleedCancelAdapting)
-                cancelDbs.push_back(st.bleedCancelledDb);
+            if (opt.bleedCancel && blockState.bleedCancelAdapting)
+                cancelDbs.push_back(blockState.bleedCancelledDb);
             // 보정량 궤적을 블록 단위로 모은다. 시프트가 블록마다 크게 움직이면 WSOLA가
             // 매번 다시 이어붙여야 해서 비배음이 생긴다(합성 실험: ±0.5반음 변조 → 13~32%).
-            if (st.hasVocalPitch)
-                corrections.push_back(st.correctedMidi - st.vocalMidi);
-            const float wet = st.wetness;
+            if (blockState.hasVocalPitch)
+                corrections.push_back(blockState.correctedMidi - blockState.vocalMidi);
+            const float wet = blockState.wetness;
             if (wet <= 0.001f)      ++wetBuckets[0];
             else if (wet < 0.25f)   ++wetBuckets[1];
             else if (wet < 0.5f)    ++wetBuckets[2];
@@ -193,6 +241,27 @@ int main(int argc, char* argv[])
         for (int i = 0; i < n; ++i)
             if (std::abs(outL[static_cast<size_t>(i)]) >= mode2::params::outputLimitPeak * 0.9999f)
                 ++clipped;
+    }
+
+    if (opt.useWorld)
+    {
+        std::cout << "WORLD 분석·재합성 중...\n";
+        const auto world = WorldVoiceTransformer::transform(
+            input.getReadPointer(1), numSamples, sampleRate, appliedShiftTrace,
+            absoluteTargetF0Trace, opt.boost, opt.volume, opt.gateEnabled, opt.gate);
+        if (static_cast<int>(world.audio.size()) != numSamples)
+        {
+            std::cerr << "WORLD 재합성 실패\n";
+            return 1;
+        }
+        output.copyFrom(0, 0, world.audio.data(), numSamples);
+        clipped = 0;
+        for (float sample : world.audio)
+            if (std::abs(sample) >= mode2::params::outputLimitPeak * 0.9999f)
+                ++clipped;
+        std::cout << "WORLD 프레임 " << world.totalFrames
+                  << "개 (유성 " << world.voicedFrames << "), FFT "
+                  << world.fftSize << "\n";
     }
 
     outFile.deleteFile();
@@ -218,7 +287,11 @@ int main(int argc, char* argv[])
               << "  볼륨=" << opt.volume << "  옥타브=" << opt.octave
               << "  게이트=" << (opt.gateEnabled ? juce::String(opt.gate) : juce::String("off"))
               << "  하울링억제=" << (opt.howlGuard ? "on" : "off")
-              << "  유입상쇄=" << (opt.bleedCancel ? "on" : "off") << "\n"
+              << "  유입상쇄=" << (opt.bleedCancel ? "on" : "off")
+              << "  시프터="
+              << (opt.useWorld ? "world-offline"
+                               : PitchShifterEngine::getBackendName(
+                                     controller.getPitchShifterBackend())) << "\n"
               << "출력 RMS " << juce::String(rms(output.getReadPointer(0), numSamples), 5)
               << "  피크 " << juce::String(output.getMagnitude(0, 0, numSamples), 5)
               << "  리미터 접촉 " << juce::String(100.0 * clipped / numSamples, 2) << "%\n";
@@ -242,6 +315,14 @@ int main(int argc, char* argv[])
 
     if (corrections.size() > 2)
     {
+        std::vector<float> sortedCorrections = corrections;
+        std::sort(sortedCorrections.begin(), sortedCorrections.end());
+        auto correctionPct = [&sortedCorrections](double p)
+        {
+            return sortedCorrections[static_cast<size_t>(
+                p * static_cast<double>(sortedCorrections.size() - 1))];
+        };
+
         std::vector<float> deltas;
         deltas.reserve(corrections.size() - 1);
         for (size_t i = 1; i < corrections.size(); ++i)
@@ -260,6 +341,9 @@ int main(int argc, char* argv[])
             if (d > 1.0f)  ++over[2];
         }
         std::cout << "보정량 궤적 (블록 " << juce::String(blockMs, 1) << "ms 단위, " << deltas.size() + 1 << "개 표본):\n"
+                  << "   실제 보정량 하위10% " << juce::String(correctionPct(0.1), 2)
+                  << "  중앙값 " << juce::String(correctionPct(0.5), 2)
+                  << "  상위10% " << juce::String(correctionPct(0.9), 2) << " 반음\n"
                   << "   블록간 변화 |Δ| 중앙값 " << juce::String(pct(0.5), 3)
                   << "  상위10% " << juce::String(pct(0.9), 2)
                   << "  최대 " << juce::String(deltas.back(), 2) << " 반음\n"

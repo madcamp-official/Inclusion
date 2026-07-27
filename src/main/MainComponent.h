@@ -49,6 +49,7 @@ private:
     void loadChannelMap();
     void refreshChannelChoices();
     void updateLatencyInfo();
+    void selectPitchShifterBackend(PitchShifterEngine::Backend backend);
 
     juce::TextButton mode1Button { "Mode 1: Vocal Follower" };
     juce::TextButton mode2Button { "Mode 2: Guitar Vocoder" };

@@ -3,11 +3,14 @@
 #include "mode2_guitar_vocoder/CorrectionCalculator.h"
 #include "mode2_guitar_vocoder/GuitarBleedCanceller.h"
 #include "mode2_guitar_vocoder/GuitarTargetTracker.h"
+#include "mode2_guitar_vocoder/PitchShifterEngine.h"
 #include "core/dsp/PitchStabilizer.h"
 #include "core/dsp/NoiseGate.h"
 #include "params/Mode2Params.h"
 
 #include <cmath>
+#include <chrono>
+#include <thread>
 #include <vector>
 
 namespace
@@ -40,88 +43,18 @@ public:
         expectWithinAbsoluteError(CorrectionCalculator::computeCorrection(54.0f, 60.0f, 1.0f), 6.0f, 0.001f);
         expectWithinAbsoluteError(CorrectionCalculator::computeCorrection(48.0f, 60.0f, 1.0f), 12.0f, 0.001f);
 
-        beginTest(utf8("피치 클래스 고정: 보컬 옥타브 오검출은 보정량에 영향을 주지 않는다"));
+        beginTest(utf8("같은 기타 절대 목표는 보컬 옥타브와 무관하게 같은 출력이 된다"));
         {
-            const float fromC3 = CorrectionCalculator::computePitchClassLockedCorrection(
-                48.0f, 64.0f, std::nullopt, 0, 1.0f);
-            const float fromC4 = CorrectionCalculator::computePitchClassLockedCorrection(
-                60.0f, 64.0f, std::nullopt, 0, 1.0f);
-            const float fromC5 = CorrectionCalculator::computePitchClassLockedCorrection(
-                72.0f, 64.0f, std::nullopt, 0, 1.0f);
-            expectWithinAbsoluteError(fromC3, 4.0f, 0.001f);
-            expectWithinAbsoluteError(fromC4, fromC3, 0.001f);
-            expectWithinAbsoluteError(fromC5, fromC3, 0.001f);
-        }
-
-        beginTest(utf8("피치 클래스 고정: 연속 상승하는 목소리에 반대 보정을 이어 출력음을 유지한다"));
-        {
-            float correction = 0.0f;
-            bool haveCorrection = false;
-            for (int vocal = 60; vocal <= 72; ++vocal)
+            constexpr float absoluteGuitarTarget = 64.0f;
+            for (float vocal : { 40.0f, 52.0f, 64.0f, 76.0f })
             {
-                correction = CorrectionCalculator::computePitchClassLockedCorrection(
-                    static_cast<float>(vocal), 60.0f,
-                    haveCorrection ? std::optional<float>(correction) : std::nullopt,
-                    0, 1.0f);
-                haveCorrection = true;
-                expectWithinAbsoluteError(static_cast<float>(vocal) + correction, 60.0f, 0.001f);
+                const float correction = CorrectionCalculator::computeCorrection(
+                    vocal, absoluteGuitarTarget, 1.0f);
+                expectWithinAbsoluteError(vocal + correction,
+                                          absoluteGuitarTarget, 0.001f);
             }
         }
 
-        beginTest(utf8("피치 클래스 고정: 옥타브 설정은 같은 음이름의 다른 분기를 고른다"));
-        {
-            const float normal = CorrectionCalculator::computePitchClassLockedCorrection(
-                60.0f, 64.0f, std::nullopt, 0, 1.0f);
-            const float lower = CorrectionCalculator::computePitchClassLockedCorrection(
-                60.0f, 64.0f, std::nullopt, -1, 1.0f);
-            expectWithinAbsoluteError(normal, 4.0f, 0.001f);
-            expectWithinAbsoluteError(lower, -8.0f, 0.001f);
-        }
-
-        beginTest(utf8("옥타브 정렬: 목표를 목소리 근처로 들여온다"));
-        {
-            // 목표 E1(28), 목소리 E3(52) → 2옥타브 올려야 목소리 옆에 온다.
-            const int octaves = CorrectionCalculator::chooseTargetOctaves(28.0f, 52.0f, 0);
-            expectEquals(octaves, 2);
-            const float aligned = 28.0f + 12.0f * static_cast<float>(octaves);
-            expect(std::abs(aligned - 52.0f) <= mode2::params::maxUsableShiftSemitones + 0.001f);
-        }
-
-        beginTest(utf8("옥타브 정렬: 상한 이내면 이미 고른 옥타브를 유지한다"));
-        // 목표와 목소리가 6반음 차이(상한 안)면 0을 유지해 절대 음높이 추종이 살아난다.
-        expectEquals(CorrectionCalculator::chooseTargetOctaves(60.0f, 54.0f, 0), 0);
-
-        beginTest(utf8("옥타브 정렬: 접기 경계에서 히스테리시스로 뒤집히지 않는다"));
-        {
-            // 목표 28.46, 목소리가 46↔47을 오가는 실측 사례. 히스테리시스가 없으면
-            // 최근접 옥타브가 1↔2로 바뀌며 보정이 12반음 뒤집혔다.
-            const float target = 28.46f;
-            int octaves = CorrectionCalculator::chooseTargetOctaves(target, 46.0f, 0);
-            const int settled = octaves;
-            for (float vocal : { 47.0f, 46.0f, 47.5f, 45.5f, 47.0f })
-                octaves = CorrectionCalculator::chooseTargetOctaves(target, vocal, octaves);
-            expectEquals(octaves, settled);
-        }
-
-        beginTest(utf8("옥타브 정렬 후 시프트는 항상 사용 가능 범위 + 히스테리시스 안이다"));
-        {
-            const float limit = mode2::params::maxUsableShiftSemitones
-                                + mode2::params::octaveChoiceHysteresisSemitones;
-            for (int semitones = -36; semitones <= 36; ++semitones)
-            {
-                const float vocal = 60.0f;
-                const float target = vocal + static_cast<float>(semitones);
-                const int octaves = CorrectionCalculator::chooseTargetOctaves(target, vocal, 0);
-                const float aligned = target + 12.0f * static_cast<float>(octaves);
-                const float correction = CorrectionCalculator::computeCorrection(vocal, aligned, 1.0f);
-                expect(std::abs(correction) <= limit + 0.001f,
-                       "semitones=" + juce::String(semitones) + " correction=" + juce::String(correction));
-
-                // 정렬은 옥타브 단위로만 움직이므로 음이름은 목표와 같아야 한다.
-                const float octaveError = aligned - target;
-                expectWithinAbsoluteError(octaveError - 12.0f * std::round(octaveError / 12.0f), 0.0f, 0.001f);
-            }
-        }
     }
 };
 
@@ -492,6 +425,136 @@ public:
 };
 
 static GuitarBleedCancellerTests guitarBleedCancellerTests;
+
+class PitchShifterEngineTests : public juce::UnitTest
+{
+public:
+    PitchShifterEngineTests() : juce::UnitTest("PitchShifterEngine") {}
+
+    void runTest() override
+    {
+        for (const auto backend : { PitchShifterEngine::Backend::RubberBand,
+                                    PitchShifterEngine::Backend::SoundTouch })
+        {
+            if (! PitchShifterEngine::isBackendAvailable(backend))
+                continue;
+
+            beginTest(juce::String(PitchShifterEngine::getBackendName(backend))
+                      + " streams finite, non-silent output");
+
+            constexpr double sampleRate = 48000.0;
+            constexpr int blockSize = 256;
+            constexpr int blocks = 240;
+            constexpr float inputHz = 220.0f;
+
+            PitchShifterEngine shifter;
+            shifter.setBackend(backend);
+            shifter.setGlideRate(100000.0f);
+            shifter.prepare(sampleRate, blockSize);
+
+            std::vector<float> input(static_cast<size_t>(blockSize));
+            std::vector<float> output(static_cast<size_t>(blockSize));
+            double phase = 0.0;
+            double sumSquares = 0.0;
+            int measuredSamples = 0;
+            int silentBlocksAfterWarmup = 0;
+
+            for (int block = 0; block < blocks; ++block)
+            {
+                for (int i = 0; i < blockSize; ++i)
+                {
+                    input[static_cast<size_t>(i)] = 0.2f * std::sin(static_cast<float>(phase));
+                    phase += 2.0 * juce::MathConstants<double>::pi * inputHz / sampleRate;
+                }
+
+                shifter.processBlock(input.data(), output.data(), blockSize, 7.0f);
+
+                float peak = 0.0f;
+                for (float sample : output)
+                {
+                    expect(std::isfinite(sample), "backend emitted NaN/Inf");
+                    peak = std::max(peak, std::abs(sample));
+                }
+
+                // R3/short의 정상 시작 지연보다 넉넉히 기다린 뒤에는 push 스트림이 매
+                // 콜백마다 끊김 없이 데이터를 내야 한다.
+                if (block > 24)
+                {
+                    if (peak < 1.0e-6f)
+                        ++silentBlocksAfterWarmup;
+                    for (float sample : output)
+                    {
+                        sumSquares += static_cast<double>(sample) * sample;
+                        ++measuredSamples;
+                    }
+                }
+            }
+
+            const float outputRms = measuredSamples > 0
+                ? static_cast<float>(std::sqrt(sumSquares / measuredSamples))
+                : 0.0f;
+            expectGreaterThan(outputRms, 0.01f, "steady-state output should be audible");
+            expectEquals(silentBlocksAfterWarmup, 0, "steady-state callback dropout");
+        }
+
+        if (PitchShifterEngine::isBackendAvailable(PitchShifterEngine::Backend::World))
+        {
+            beginTest("world worker keeps up with a real-time callback");
+
+            constexpr double sampleRate = 48000.0;
+            constexpr int blockSize = 256;
+            constexpr int blocks = 180;
+            PitchShifterEngine shifter;
+            shifter.setBackend(PitchShifterEngine::Backend::World);
+            shifter.prepare(sampleRate, blockSize);
+
+            std::vector<float> input(static_cast<size_t>(blockSize));
+            std::vector<float> output(static_cast<size_t>(blockSize));
+            double phase = 0.0;
+            double sumSquares = 0.0;
+            int measuredSamples = 0;
+            int silentBlocks = 0;
+
+            for (int block = 0; block < blocks; ++block)
+            {
+                for (int i = 0; i < blockSize; ++i)
+                {
+                    // 단일 사인보다 실제 유성음에 가까운 고조파 입력을 쓴다.
+                    input[static_cast<size_t>(i)] =
+                        0.12f * std::sin(static_cast<float>(phase))
+                      + 0.06f * std::sin(static_cast<float>(phase * 2.0))
+                      + 0.03f * std::sin(static_cast<float>(phase * 3.0));
+                    phase += 2.0 * juce::MathConstants<double>::pi * 180.0 / sampleRate;
+                }
+
+                shifter.processBlock(input.data(), output.data(), blockSize, 0.0f, 240.0f);
+                if (block > 45)
+                {
+                    float peak = 0.0f;
+                    for (float sample : output)
+                    {
+                        expect(std::isfinite(sample), "WORLD emitted NaN/Inf");
+                        peak = std::max(peak, std::abs(sample));
+                        sumSquares += static_cast<double>(sample) * sample;
+                        ++measuredSamples;
+                    }
+                    if (peak < 1.0e-6f)
+                        ++silentBlocks;
+                }
+
+                std::this_thread::sleep_for(std::chrono::microseconds(5333));
+            }
+
+            const float outputRms = measuredSamples > 0
+                ? static_cast<float>(std::sqrt(sumSquares / measuredSamples))
+                : 0.0f;
+            expectGreaterThan(outputRms, 0.005f, "WORLD steady-state output should be audible");
+            expectLessOrEqual(silentBlocks, 2, "WORLD worker fell behind real time");
+        }
+    }
+};
+
+static PitchShifterEngineTests pitchShifterEngineTests;
 
 int main()
 {

@@ -3,26 +3,41 @@
 #include "params/Mode2Params.h"
 
 #include <atomic>
+#include <deque>
+#include <memory>
 #include <vector>
 
-#ifdef HAVE_SOUNDTOUCH
-#include <SoundTouch.h>
-#include <deque>
+#if defined(HAVE_RUBBERBAND)
+#include <rubberband/RubberBandStretcher.h>
 #endif
 
-// 목소리 피치 시프터. HAVE_SOUNDTOUCH가 정의되어 있으면(=external/soundtouch가 실제로
-// 채워져 CMake가 링크했으면) SoundTouch 백엔드를 쓰고, 아니면 시프트 없이 드라이로
-// 통과시키는 스텁으로 동작한다. 어느 쪽이든 목표 시프트량 변경 시 급격한 점프를 막기
-// 위해 시프트 램프를 적용한다.
+#if defined(HAVE_SOUNDTOUCH)
+#include <SoundTouch.h>
+#endif
+
+#if defined(HAVE_WORLD)
+#include "WorldRealtimePitchShifter.h"
+#endif
+
+// 목소리 피치 시프터. Rubber Band를 기본으로 쓰고, SoundTouch와 WORLD 실험
+// 백엔드는 A/B 및 폴백용으로 유지한다.
 class PitchShifterEngine
 {
 public:
+    enum class Backend
+    {
+        World,
+        RubberBand,
+        SoundTouch
+    };
+
     void prepare(double sampleRateIn, int maxBlockSize);
     void reset();
 
     // requestedSemitones: 이번 블록에 원하는 시프트량(CorrectionCalculator 결과).
     // input/output은 모노 버퍼이며 in-place 호출 가능(output == input).
-    void processBlock(const float* input, float* output, int numSamples, float requestedSemitones);
+    void processBlock(const float* input, float* output, int numSamples, float requestedSemitones,
+                      float absoluteTargetF0Hz = 0.0f);
 
     float getCurrentShiftSemitones() const { return currentShiftSemitones; }
 
@@ -30,16 +45,48 @@ public:
     // UI 스레드에서 호출되고 오디오 스레드가 읽으므로 atomic이다.
     void setGlideRate(float semitonesPerSecond) { glideSemitonesPerSecond.store(semitonesPerSecond); }
 
+    // prepare/process와 동시에 호출하지 않는다. 앱은 기본 백엔드를 사용하고, 오프라인
+    // A/B 도구가 prepare 전에 이 값을 지정한다.
+    void setBackend(Backend requested);
+    Backend getActiveBackend() const { return activeBackend; }
+    int getLatencySamples() const { return latencySamples; }
+    static bool isBackendAvailable(Backend backend);
+    static const char* getBackendName(Backend backend);
+
 private:
+    void processRubberBand(const float* input, float* output, int numSamples);
+    void processSoundTouch(const float* input, float* output, int numSamples);
+
     double sampleRate = 44100.0;
+    int latencySamples = 0;
     float currentShiftSemitones = 0.0f;
     std::atomic<float> glideSemitonesPerSecond { mode2::params::defaultGlideSemitonesPerSecond };
 
-#ifdef HAVE_SOUNDTOUCH
+#if defined(HAVE_RUBBERBAND)
+    std::unique_ptr<RubberBand::RubberBandStretcher> rubberBand;
+    std::deque<float> rubberBandOutputQueue;
+    std::vector<float> rubberBandReceiveScratch;
+    std::vector<float> rubberBandSilentPad;
+    size_t rubberBandSamplesToDiscard = 0;
+#endif
+
+#if defined(HAVE_SOUNDTOUCH)
     soundtouch::SoundTouch soundTouch;
     // SoundTouch는 WSOLA 처리 특성상 넣은 만큼 즉시 나오지 않으므로(초기 지연 존재),
     // 받은 샘플을 큐에 모아뒀다가 블록 크기만큼만 꺼내 쓴다.
-    std::deque<float> outputQueue;
-    std::vector<float> receiveScratch;
+    std::deque<float> soundTouchOutputQueue;
+    std::vector<float> soundTouchReceiveScratch;
+#endif
+
+#if defined(HAVE_WORLD)
+    WorldRealtimePitchShifter world;
+#endif
+
+#if defined(HAVE_RUBBERBAND)
+    Backend activeBackend = Backend::RubberBand;
+#elif defined(HAVE_SOUNDTOUCH)
+    Backend activeBackend = Backend::SoundTouch;
+#else
+    Backend activeBackend = Backend::World;
 #endif
 };

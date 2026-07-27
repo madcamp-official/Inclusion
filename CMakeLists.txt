@@ -15,7 +15,36 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(JUCE)
 
-# --- SoundTouch (모드 2 피치 시프터, B 담당) ----------------------------
+# --- WORLD (실시간 하이브리드 + 오프라인 음색 보존 기준선) ----------------
+set(WORLD_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(WORLD_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+add_subdirectory(external/world)
+
+# --- 피치 시프터 백엔드 --------------------------------------------------
+# WORLD는 vendored 소스로 항상 빌드한다. Rubber Band와 SoundTouch는 A/B 및 폴백용이다.
+# Rubber Band 시스템 패키지(Homebrew의 `brew install rubberband`,
+# apt의 `librubberband-dev` 등)가 있으면 함께 활성화한다.
+find_path(RUBBERBAND_INCLUDE_DIR
+    NAMES rubberband/RubberBandStretcher.h
+)
+find_library(RUBBERBAND_LIBRARY
+    NAMES rubberband
+)
+
+if(RUBBERBAND_INCLUDE_DIR AND RUBBERBAND_LIBRARY)
+    add_library(RubberBand::RubberBand UNKNOWN IMPORTED)
+    set_target_properties(RubberBand::RubberBand PROPERTIES
+        IMPORTED_LOCATION "${RUBBERBAND_LIBRARY}"
+        INTERFACE_INCLUDE_DIRECTORIES "${RUBBERBAND_INCLUDE_DIR}"
+    )
+    set(HAVE_RUBBERBAND TRUE)
+    message(STATUS "Rubber Band found: ${RUBBERBAND_LIBRARY}")
+else()
+    set(HAVE_RUBBERBAND FALSE)
+    message(STATUS "Rubber Band not found — falling back to SoundTouch when available.")
+endif()
+
+# SoundTouch는 Rubber Band와 녹음 A/B 비교를 위해 그대로 유지한다.
 # external/soundtouch 에 SoundTouch 소스(CMakeLists.txt 포함)가 있으면
 # 자동으로 감지되어 링크된다. 없으면 이 블록은 건너뛰고 HAVE_SOUNDTOUCH=0 으로 빌드된다.
 set(SOUNDTOUCH_DIR ${CMAKE_SOURCE_DIR}/external/soundtouch)
@@ -27,6 +56,19 @@ else()
     message(STATUS "SoundTouch not found under external/soundtouch — Mode 2 pitch shifting will build without it for now.")
     set(HAVE_SOUNDTOUCH FALSE)
 endif()
+
+function(configure_pitch_shifter target)
+    target_link_libraries(${target} PRIVATE world::core)
+    target_compile_definitions(${target} PRIVATE HAVE_WORLD=1)
+    if(HAVE_RUBBERBAND)
+        target_link_libraries(${target} PRIVATE RubberBand::RubberBand)
+        target_compile_definitions(${target} PRIVATE HAVE_RUBBERBAND=1)
+    endif()
+    if(HAVE_SOUNDTOUCH)
+        target_link_libraries(${target} PRIVATE SoundTouch)
+        target_compile_definitions(${target} PRIVATE HAVE_SOUNDTOUCH=1)
+    endif()
+endfunction()
 
 # --- App target ---------------------------------------------------------
 juce_add_gui_app(VocalGuitarApp
@@ -49,6 +91,7 @@ target_sources(VocalGuitarApp PRIVATE
     src/mode2_guitar_vocoder/GuitarBleedCanceller.cpp
     src/mode2_guitar_vocoder/GuitarTargetTracker.cpp
     src/mode2_guitar_vocoder/PitchShifterEngine.cpp
+    src/mode2_guitar_vocoder/WorldRealtimePitchShifter.cpp
     src/mode2_guitar_vocoder/Mode2Controller.cpp
     src/ui/mode2/Mode2Screen.cpp
 )
@@ -77,10 +120,7 @@ target_link_libraries(VocalGuitarApp
         juce::juce_recommended_warning_flags
 )
 
-if(HAVE_SOUNDTOUCH)
-    target_link_libraries(VocalGuitarApp PRIVATE SoundTouch)
-    target_compile_definitions(VocalGuitarApp PRIVATE HAVE_SOUNDTOUCH=1)
-endif()
+configure_pitch_shifter(VocalGuitarApp)
 
 # --- Mode 2 오프라인 재현 도구 -------------------------------------------
 # 앱이 녹음한 입력 WAV를 앱과 같은 DSP에 통과시켜, 파라미터만 바꿔가며 결과를 비교할 수 있게 한다.
@@ -100,6 +140,8 @@ target_sources(Mode2Offline PRIVATE
     src/mode2_guitar_vocoder/GuitarBleedCanceller.cpp
     src/mode2_guitar_vocoder/GuitarTargetTracker.cpp
     src/mode2_guitar_vocoder/PitchShifterEngine.cpp
+    src/mode2_guitar_vocoder/WorldRealtimePitchShifter.cpp
+    src/mode2_guitar_vocoder/WorldVoiceTransformer.cpp
     src/mode2_guitar_vocoder/Mode2Controller.cpp
 )
 
@@ -119,10 +161,7 @@ target_link_libraries(Mode2Offline
         juce::juce_recommended_warning_flags
 )
 
-if(HAVE_SOUNDTOUCH)
-    target_link_libraries(Mode2Offline PRIVATE SoundTouch)
-    target_compile_definitions(Mode2Offline PRIVATE HAVE_SOUNDTOUCH=1)
-endif()
+configure_pitch_shifter(Mode2Offline)
 
 # --- Mode 2 unit tests ---------------------------------------------------
 juce_add_console_app(Mode2Tests
@@ -139,6 +178,7 @@ target_sources(Mode2Tests PRIVATE
     src/mode2_guitar_vocoder/GuitarBleedCanceller.cpp
     src/mode2_guitar_vocoder/GuitarTargetTracker.cpp
     src/mode2_guitar_vocoder/PitchShifterEngine.cpp
+    src/mode2_guitar_vocoder/WorldRealtimePitchShifter.cpp
 )
 
 target_include_directories(Mode2Tests PRIVATE src)
@@ -150,3 +190,5 @@ target_link_libraries(Mode2Tests
         juce::juce_recommended_config_flags
         juce::juce_recommended_warning_flags
 )
+
+configure_pitch_shifter(Mode2Tests)

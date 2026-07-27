@@ -67,24 +67,6 @@ void Mode2Controller::prepare(double sampleRateIn, int maxBlockSize)
     cleanVocalScratch.assign(static_cast<size_t>(maxBlockSize), 0.0f);
 }
 
-float Mode2Controller::unwrapVocalOctave(float midi)
-{
-    if (! haveUnwrappedVocalPitch)
-    {
-        haveUnwrappedVocalPitch = true;
-        lastUnwrappedVocalMidi = midi;
-        return midi;
-    }
-
-    // 한 오디오 블록 사이에 사람 목소리가 실제로 한두 옥타브 도약할 수는 없다. 검출기가
-    // 같은 음의 기본주기/반주기를 번갈아 고른 경우이므로 직전 값과 가장 가까운 옥타브로
-    // 되접는다. 피치 클래스는 보존하면서 보정량의 ±12/24반음 순간 점프만 제거한다.
-    const float octaves = std::round((lastUnwrappedVocalMidi - midi) / 12.0f);
-    const float unwrapped = midi + 12.0f * octaves;
-    lastUnwrappedVocalMidi = unwrapped;
-    return unwrapped;
-}
-
 float Mode2Controller::medianVocalMidi(float newMidi)
 {
     const int taps = static_cast<int>(vocalPitchHistory.size());
@@ -122,10 +104,6 @@ void Mode2Controller::reset()
     vocalPitchHistoryCount = 0;
     vocalPitchHistoryWrite = 0;
     std::fill(vocalPitchHistory.begin(), vocalPitchHistory.end(), 0.0f);
-    haveUnwrappedVocalPitch = false;
-    lastUnwrappedVocalMidi = 0.0f;
-    lastRequestedTargetOctaveShift = targetOctaveShift.load();
-
     bleedCanceller.reset();
     guitarTracker.reset();
     vocalPitchDetector.reset();
@@ -154,7 +132,7 @@ void Mode2Controller::processBlock(const float* guitarIn, const float* vocalIn, 
         boostedVocalScratch[static_cast<size_t>(i)] = cleanVocalScratch[static_cast<size_t>(i)] * inputGain;
 
     // 제어 경로는 현재(지연 전) 목소리를 분석하고, 오디오 경로만 분석창의 반 길이만큼
-    // 늦춘다. 그러면 피치 추정값이 나타내는 창 중앙 시점과 SoundTouch에 들어갈 음성 시점이
+    // 늦춘다. 그러면 피치 추정값이 나타내는 창 중앙 시점과 시프터에 들어갈 음성 시점이
     // 맞는다. 둘 다 delayedVocalScratch를 쓰면 인위적 지연 뒤에 분석 지연이 다시 붙는다.
     const PitchDetector::Result vocalPitch =
         vocalPitchDetector.processBlock(boostedVocalScratch.data(), numSamples);
@@ -164,27 +142,22 @@ void Mode2Controller::processBlock(const float* guitarIn, const float* vocalIn, 
 
     // 검출 지터를 미디언으로 걸러낸 값으로 보정량을 계산한다. 이걸 거치지 않으면 신뢰도가
     // 0.9 이상이어도 매 블록 몇 반음씩 튀는 추정치가 그대로 출력 음정을 흔든다.
-    const float continuousVocalMidi = vocalConfident ? unwrapVocalOctave(vocalPitch.midiFloat)
-                                                     : vocalPitch.midiFloat;
-    const float smoothedVocalMidi = vocalConfident ? medianVocalMidi(continuousVocalMidi)
+    // 절대 출력 옥타브를 고정하려면 실제 보컬의 옥타브를 그대로 알아야 한다. 예전에는
+    // ±12반음 변화를 검출 오류로 간주해 직전 옥타브로 되접었는데, 그러면 사용자가 정말
+    // 한 옥타브 바꿔 부른 경우도 숨겨져 출력이 목소리를 따라 이동했다. 3탭 미디언으로
+    // 단발성 오류만 제거하고 지속되는 옥타브 변화는 그대로 보정 계산에 반영한다.
+    const float smoothedVocalMidi = vocalConfident ? medianVocalMidi(vocalPitch.midiFloat)
                                                    : vocalPitch.midiFloat;
     const std::optional<float> vocalMidiOpt =
         vocalConfident ? std::optional<float>(smoothedVocalMidi) : std::nullopt;
     const std::optional<float> targetMidiOpt =
         guitarOut.hasTarget ? std::optional<float>(guitarOut.targetMidi) : std::nullopt;
 
-    // 옥타브 슬라이더는 "어느 보정 분기를 선호할지"만 정한다. 실제 계산은 보컬과 기타의
-    // 음이름 차이(mod 12)를 사용하므로, 보컬 검출이 같은 음을 여러 옥타브로 오인해도
-    // 시프트량은 바뀌지 않는다. 슬라이더를 움직였을 때만 직전 분기를 명시적으로 옮긴다.
+    // 출력의 절대 목표 음높이를 기타 MIDI + 사용자가 고른 옥타브로 고정한다. 예를 들어
+    // 기타 E3, 옥타브 0이면 보컬이 E2로 내려가거나 E4로 올라가도 출력은 항상 E3이다.
+    // 예전의 pitch-class 고정 방식은 보정량만 같은 분기에 유지해서, 보컬이 한 옥타브
+    // 바뀌면 출력도 그대로 한 옥타브 따라 움직이는 문제가 있었다.
     const int requestedTargetOctaveShift = targetOctaveShift.load();
-    if (requestedTargetOctaveShift != lastRequestedTargetOctaveShift)
-    {
-        if (haveVocalCorrection)
-            lastCorrectionSemitones += 12.0f
-                                       * static_cast<float>(requestedTargetOctaveShift
-                                                            - lastRequestedTargetOctaveShift);
-        lastRequestedTargetOctaveShift = requestedTargetOctaveShift;
-    }
 
     // M2-4: 기타 목표를 잃었거나(guitarOut.fadeGain) 목소리 검출 신뢰도가 낮으면 시프트된
     // 신호 대신 드라이 목소리 쪽으로 감쇠한다.
@@ -194,18 +167,15 @@ void Mode2Controller::processBlock(const float* guitarIn, const float* vocalIn, 
     // 음에 안 맞으므로 "내 목소리 음이 남는" 소리가 된다. 그래서 기타 쪽 상태기계와 같은
     // HOLD/FADE로 처리한다: 신뢰도를 확보한 동안은 보정을 갱신하며 완전 wet을 유지하고,
     // 신뢰도를 잃으면 직전 보정을 그대로 물린 채 hold 시간을 버틴 뒤에야 드라이로 fade 한다.
-    // 부수 효과로, SoundTouch 내부 지연 때문에 시프트 경로와 드라이 경로는 시간이 어긋나
+    // 부수 효과로, 시프터 내부 지연 때문에 시프트 경로와 드라이 경로는 시간이 어긋나
     // 있는데(콤 필터링) wet이 1에 붙어 있으면 그 간섭도 함께 사라진다.
     float correctionSemitones = 0.0f;
-    if (vocalConfident)
+    if (vocalConfident && targetMidiOpt.has_value())
     {
-        const std::optional<float> previousCorrection =
-            haveVocalCorrection ? std::optional<float>(lastCorrectionSemitones) : std::nullopt;
-        correctionSemitones =
-            CorrectionCalculator::computePitchClassLockedCorrection(vocalMidiOpt, targetMidiOpt,
-                                                                    previousCorrection,
-                                                                    requestedTargetOctaveShift,
-                                                                    mode2::params::pitchFollowStrength);
+        const float absoluteTargetMidi =
+            *targetMidiOpt + 12.0f * static_cast<float>(requestedTargetOctaveShift);
+        correctionSemitones = CorrectionCalculator::computeCorrection(
+            vocalMidiOpt, absoluteTargetMidi, mode2::params::pitchFollowStrength);
         lastCorrectionSemitones = correctionSemitones;
         haveVocalCorrection = true;
         vocalHoldBlocksRemaining = vocalHoldBlocksTotal;
@@ -241,16 +211,28 @@ void Mode2Controller::processBlock(const float* guitarIn, const float* vocalIn, 
         vocalWetGain = 0.0f;
     }
 
-    // 드라이 복귀도 SoundTouch를 우회한 원본을 섞지 않고, 같은 처리 경로에서 보정량만
-    // 0으로 내려 보낸다. SoundTouch 출력은 입력보다 수십 ms 늦기 때문에 아래처럼
+    // 드라이 복귀도 시프터를 우회한 원본을 섞지 않고, 같은 처리 경로에서 보정량만
+    // 0으로 내려 보낸다. 시프터 출력은 입력보다 늦기 때문에 아래처럼
     //   shifted * wet + delayedDry * (1-wet)
     // 를 하면 전환 구간에서 서로 다른 시점의 목소리 두 개가 겹쳐 콤 필터링과 이중 음정이
-    // 생긴다. 0-semitone SoundTouch 출력은 음정상 드라이지만 처리 지연은 wet과 같으므로
+    // 생긴다. 0-semitone 시프터 출력은 음정상 드라이지만 처리 지연은 wet과 같으므로
     // 한 경로만 유지하면 그 문제가 없다.
     const float correctionMix = guitarOut.fadeGain * vocalWetGain;
     const float effectiveCorrectionSemitones = correctionSemitones * correctionMix;
+
+    // WORLD에는 "몇 반음 옮겨라"보다 기타의 절대 F0를 직접 준다. 이 경로에서는 WORLD가
+    // 분석한 보컬 F0가 한 옥타브 잘못 잡혀도 합성 F0가 기타 목표를 따라가므로, 같은 기타
+    // 음에서 사용자가 노래한 옥타브에 따라 출력 옥타브가 달라지지 않는다.
+    float absoluteTargetF0Hz = 0.0f;
+    if (guitarOut.hasTarget && haveVocalCorrection && correctionMix >= 0.999f)
+    {
+        const float absoluteTargetMidi =
+            guitarOut.targetMidi + 12.0f * static_cast<float>(requestedTargetOctaveShift);
+        absoluteTargetF0Hz =
+            440.0f * std::pow(2.0f, (absoluteTargetMidi - 69.0f) / 12.0f);
+    }
     pitchShifter.processBlock(delayedVocalScratch.data(), shiftedVocalScratch.data(), numSamples,
-                              effectiveCorrectionSemitones);
+                              effectiveCorrectionSemitones, absoluteTargetF0Hz);
 
     // 하향 시프트로 같이 내려간 자음·포먼트의 존재감을 시프트된 경로 안에서만 복원한다.
     // 원본 목소리를 병렬로 섞지 않으므로 원래 피치가 이중으로 들리거나 시간축이 어긋나는
@@ -259,7 +241,12 @@ void Mode2Controller::processBlock(const float* guitarIn, const float* vocalIn, 
         std::clamp(-effectiveCorrectionSemitones
                        / mode2::params::timbrePresenceFullShiftSemitones,
                    0.0f, 1.0f);
-    const float presenceAmount = mode2::params::timbrePresenceAmount * downwardShiftRatio;
+    // Rubber Band는 포먼트를 직접 보존하므로 SoundTouch용 고역 보정을 중복 적용하지 않는다.
+    const bool needsPresenceCompensation =
+        pitchShifter.getActiveBackend() == PitchShifterEngine::Backend::SoundTouch;
+    const float presenceAmount = needsPresenceCompensation
+        ? mode2::params::timbrePresenceAmount * downwardShiftRatio
+        : 0.0f;
     for (int i = 0; i < numSamples; ++i)
     {
         const float sample = shiftedVocalScratch[static_cast<size_t>(i)];
@@ -345,7 +332,7 @@ void Mode2Controller::processBlock(const float* guitarIn, const float* vocalIn, 
 
     const float outputGain = calibratedCeiling * outputVolume.load() * feedbackDuckGain * outputTripGain;
 
-    // 항상 같은 SoundTouch 경로 하나만 출력한다. wetness는 이제 오디오 두 개의 혼합률이
+    // 항상 같은 시프터 경로 하나만 출력한다. wetness는 이제 오디오 두 개의 혼합률이
     // 아니라 "현재 적용 중인 보정 강도"를 뜻한다.
     std::copy(shiftedVocalScratch.begin(), shiftedVocalScratch.begin() + numSamples, outL);
 
@@ -376,6 +363,7 @@ void Mode2Controller::processBlock(const float* guitarIn, const float* vocalIn, 
     // 그래야 검출기의 ±12반음 후보 전환이 UI에서 가짜 옥타브 점프로 보이지 않는다.
     uiVocalMidi.store(vocalConfident ? smoothedVocalMidi : 0.0f);
     uiCorrectedMidi.store(vocalConfident ? smoothedVocalMidi + effectiveCorrectionSemitones : 0.0f);
+    uiAppliedShiftSemitones.store(pitchShifter.getCurrentShiftSemitones());
     uiWetness.store(wetness);
     uiGuitarState.store(static_cast<int>(guitarOut.state));
     uiGuitarInputLevel.store(computeRms(guitarIn, numSamples));
@@ -406,6 +394,7 @@ Mode2Controller::DisplayState Mode2Controller::getDisplayState() const
     state.hasVocalPitch = uiHasVocalPitch.load();
     state.vocalMidi = uiVocalMidi.load();
     state.correctedMidi = uiCorrectedMidi.load();
+    state.appliedShiftSemitones = uiAppliedShiftSemitones.load();
     state.wetness = uiWetness.load();
     state.guitarState = static_cast<PitchStabilizer::State>(uiGuitarState.load());
     state.calibrating = feedbackCalibrator.isCalibrating();

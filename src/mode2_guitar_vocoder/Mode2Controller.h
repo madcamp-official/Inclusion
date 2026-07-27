@@ -28,6 +28,7 @@ public:
         bool hasVocalPitch = false;
         float vocalMidi = 0.0f;
         float correctedMidi = 0.0f;
+        float appliedShiftSemitones = 0.0f;
         float wetness = 0.0f;
         PitchStabilizer::State guitarState = PitchStabilizer::State::Idle;
         bool calibrating = false;
@@ -101,6 +102,15 @@ public:
     // 글라이드(포르타멘토) 속도, 반음/초. 낮추면 음 사이를 미끄러져 레가토처럼 들린다.
     void setGlideRate(float semitonesPerSecond) { pitchShifter.setGlideRate(semitonesPerSecond); }
 
+    // 오프라인 A/B용. prepare 전에 설정한다.
+    void setPitchShifterBackend(PitchShifterEngine::Backend backend) { pitchShifter.setBackend(backend); }
+    PitchShifterEngine::Backend getPitchShifterBackend() const { return pitchShifter.getActiveBackend(); }
+    int getPitchShifterLatencySamples() const { return pitchShifter.getLatencySamples(); }
+    double getPitchShifterLatencyMilliseconds() const
+    {
+        return 1000.0 * static_cast<double>(pitchShifter.getLatencySamples()) / sampleRate;
+    }
+
     // 목소리 마이크에 새어 들어온 기타를 지운다. 기타를 라인(DI)으로 받고 목소리를 근접
     // 마이크로 받는 등 유입이 애초에 없는 환경에서는 꺼도 된다.
     void setBleedCancelEnabled(bool shouldEnable) { bleedCanceller.setEnabled(shouldEnable); }
@@ -127,6 +137,7 @@ private:
     std::atomic<bool> uiHasVocalPitch { false };
     std::atomic<float> uiVocalMidi { 0.0f };
     std::atomic<float> uiCorrectedMidi { 0.0f };
+    std::atomic<float> uiAppliedShiftSemitones { 0.0f };
     std::atomic<float> uiWetness { 0.0f };
     std::atomic<int> uiGuitarState { 0 };
     std::atomic<float> uiGuitarInputLevel { 0.0f };
@@ -168,15 +179,11 @@ private:
     int vocalPitchHistoryCount = 0;
     int vocalPitchHistoryWrite = 0;
     std::vector<float> vocalPitchSortScratch;
-    bool haveUnwrappedVocalPitch = false;
-    float lastUnwrappedVocalMidi = 0.0f;
-    float unwrapVocalOctave(float midi);
     float medianVocalMidi(float newMidi);
 
     // 목소리 신뢰도 HOLD/FADE — 순간적인 신뢰도 하락에 원본 음정이 새어 나오지 않게,
     // 직전 보정과 완전 wet을 유지했다가 지속적으로 잃었을 때만 드라이로 되돌린다.
     float lastCorrectionSemitones = 0.0f;
-    int lastRequestedTargetOctaveShift = mode2::params::targetOctaveShift;
     bool haveVocalCorrection = false;
     float vocalWetGain = 0.0f;
     int vocalHoldBlocksRemaining = 0;

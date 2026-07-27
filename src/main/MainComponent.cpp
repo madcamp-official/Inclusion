@@ -52,11 +52,15 @@ MainComponent::MainComponent()
         saveChannelMap();
     };
     mode2Screen.onToggleRecording = [this] { return toggleRecording(); };
+    mode2Screen.onPitchShifterBackendChanged = [this](PitchShifterEngine::Backend backend)
+    {
+        selectPitchShifterBackend(backend);
+    };
     refreshChannelChoices();
     addChildComponent(mode2Screen);
 
-    // Mode2Screen의 컨트롤이 모두 들어가야 한다(현재 레이아웃 합계 약 744px + 여유).
-    setSize(620, 800);
+    // Mode2Screen의 컨트롤이 모두 들어가야 한다.
+    setSize(620, 860);
 }
 
 MainComponent::~MainComponent()
@@ -137,12 +141,34 @@ void MainComponent::updateLatencyInfo()
     const double toMs = 1000.0 / sr;
     const double inputMs = static_cast<double>(device->getInputLatencyInSamples()) * toMs;
     const double outputMs = static_cast<double>(device->getOutputLatencyInSamples()) * toMs;
-    // 제어 lookahead용 목소리 지연 + 콜백 블록 1개분.
+    // 제어 lookahead용 목소리 지연 + 콜백 블록 1개분 + 시프터 고유 지연.
     const double processingMs =
         static_cast<double>(device->getCurrentBufferSizeSamples()) * toMs
-        + 1000.0 * mode2::params::vocalControlLookaheadSeconds;
+        + 1000.0 * mode2::params::vocalControlLookaheadSeconds
+        + static_cast<double>(mode2Controller.getPitchShifterLatencySamples()) * toMs;
 
     mode2Screen.setLatencyInfo(inputMs, outputMs, processingMs);
+}
+
+void MainComponent::selectPitchShifterBackend(PitchShifterEngine::Backend backend)
+{
+    if (! PitchShifterEngine::isBackendAvailable(backend)
+        || backend == mode2Controller.getPitchShifterBackend())
+        return;
+
+    auto* device = deviceManager.getCurrentAudioDevice();
+    if (device == nullptr)
+        return;
+
+    // UI 스레드에서 백엔드 객체를 reset하는 동안 오디오 콜백이 같은 객체를 건드리지
+    // 못하게 한다. 전환 순간에는 짧은 무음이 생기지만 A/B 중 데이터 레이스나 클릭은 없다.
+    {
+        const juce::ScopedLock callbackLock(deviceManager.getAudioCallbackLock());
+        mode2Controller.setPitchShifterBackend(backend);
+        mode2Controller.prepare(device->getCurrentSampleRate(),
+                                device->getCurrentBufferSizeSamples());
+    }
+    updateLatencyInfo();
 }
 
 void MainComponent::refreshChannelChoices()

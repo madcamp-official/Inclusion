@@ -1,6 +1,8 @@
 #include "Mode2Screen.h"
 #include "params/Mode2Params.h"
 
+#include <cmath>
+
 namespace
 {
     // 8비트 리터럴을 ASCII로 오해하는 juce::String(const char*) 대신 UTF-8로 명시 변환한다.
@@ -51,6 +53,37 @@ Mode2Screen::Mode2Screen(Mode2Controller& controllerIn)
     vocalChannelBox.onChange = notifyChannelChange;
     addAndMakeVisible(guitarChannelBox);
     addAndMakeVisible(vocalChannelBox);
+
+    pitchShifterLabel.setText(utf8("피치 시프터 A/B"), juce::dontSendNotification);
+    pitchShifterLabel.setJustificationType(juce::Justification::centredLeft);
+    addAndMakeVisible(pitchShifterLabel);
+    pitchShifterBox.addItem("Rubber Band", 1);
+    pitchShifterBox.addItem(utf8("기존 SoundTouch"), 2);
+    pitchShifterBox.addItem(utf8("WORLD (실험)"), 3);
+    pitchShifterBox.setItemEnabled(
+        1, PitchShifterEngine::isBackendAvailable(PitchShifterEngine::Backend::RubberBand));
+    pitchShifterBox.setItemEnabled(
+        2, PitchShifterEngine::isBackendAvailable(PitchShifterEngine::Backend::SoundTouch));
+    pitchShifterBox.setItemEnabled(
+        3, PitchShifterEngine::isBackendAvailable(PitchShifterEngine::Backend::World));
+    const auto initialBackend = controller.getPitchShifterBackend();
+    pitchShifterBox.setSelectedId(
+        initialBackend == PitchShifterEngine::Backend::RubberBand ? 1
+        : initialBackend == PitchShifterEngine::Backend::SoundTouch ? 2 : 3,
+        juce::dontSendNotification);
+    pitchShifterBox.onChange = [this]
+    {
+        if (! onPitchShifterBackendChanged)
+            return;
+        const auto backend =
+            pitchShifterBox.getSelectedId() == 1
+                ? PitchShifterEngine::Backend::RubberBand
+                : pitchShifterBox.getSelectedId() == 2
+                    ? PitchShifterEngine::Backend::SoundTouch
+                    : PitchShifterEngine::Backend::World;
+        onPitchShifterBackendChanged(backend);
+    };
+    addAndMakeVisible(pitchShifterBox);
 
     outputLevelLabel.setJustificationType(juce::Justification::centredLeft);
     addAndMakeVisible(outputLevelLabel);
@@ -251,8 +284,22 @@ void Mode2Screen::timerCallback()
                               juce::dontSendNotification);
     vocalPitchLabel.setText(utf8("내 목소리 ") + (state.hasVocalPitch ? midiToDisplayString(state.vocalMidi) : juce::String("--")),
                              juce::dontSendNotification);
-    correctedPitchLabel.setText(utf8("보정 후   ") + (state.hasVocalPitch ? midiToDisplayString(state.correctedMidi) : juce::String("--")),
-                                 juce::dontSendNotification);
+    juce::String correctedText = utf8("보정 후   ")
+                                 + (state.hasVocalPitch
+                                        ? midiToDisplayString(state.correctedMidi)
+                                        : juce::String("--"));
+    correctedText += utf8("   실제 시프트 ")
+                     + juce::String(state.appliedShiftSemitones, 1)
+                     + utf8(" 반음");
+    correctedText += "   ["
+                     + juce::String(PitchShifterEngine::getBackendName(
+                           controller.getPitchShifterBackend())).toUpperCase()
+                     + " / "
+                     + juce::String(controller.getPitchShifterLatencyMilliseconds(), 0)
+                     + " ms]";
+    if (std::abs(state.appliedShiftSemitones) >= 7.0f)
+        correctedText += utf8("  ⚠ 큰 시프트: 음색 보존 한계");
+    correctedPitchLabel.setText(correctedText, juce::dontSendNotification);
 
     followProgress = static_cast<double>(state.wetness);
     followLabel.setText(utf8("추종도 ") + juce::String(juce::roundToInt(state.wetness * 100.0f)) + "%", juce::dontSendNotification);
@@ -324,6 +371,9 @@ void Mode2Screen::resized()
         guitarChannelBox.setBounds(row.removeFromLeft(row.getWidth() / 2).reduced(0, 0));
         vocalChannelBox.setBounds(row.reduced(6, 0));
     }
+    area.removeFromTop(8);
+    pitchShifterLabel.setBounds(area.removeFromTop(20));
+    pitchShifterBox.setBounds(area.removeFromTop(28));
     area.removeFromTop(8);
     outputLevelLabel.setBounds(area.removeFromTop(20));
     outputLevelBar.setBounds(area.removeFromTop(14));
