@@ -124,6 +124,33 @@ static Float64 sampleRate(AudioObjectID device)
     return rate;
 }
 
+// 출력 기기가 음소거되어 있거나 볼륨이 0이면 통합 기기는 정상인데 소리만 안 난다.
+// 시스템 출력을 다른 기기(에어팟 등)로 쓰는 동안 내장 스피커가 음소거·볼륨 0으로 남아 있는
+// 일이 흔하다. 실제로 이걸 못 보고 라우팅을 한참 의심한 적이 있어서 만들 때 같이 확인한다.
+static void warnIfSilenced(AudioObjectID device, const char *name)
+{
+    UInt32 mute = 0;
+    UInt32 size = sizeof(mute);
+    AudioObjectPropertyAddress muteAddr = { kAudioDevicePropertyMute, kAudioDevicePropertyScopeOutput,
+                                            kAudioObjectPropertyElementMain };
+    if (AudioObjectGetPropertyData(device, &muteAddr, 0, NULL, &size, &mute) == noErr && mute)
+        printf("  !! %s 가 음소거 상태다 — 소리가 안 난다.\n", name);
+
+    Float32 volume = -1.0f;
+    size = sizeof(volume);
+    AudioObjectPropertyAddress volAddr = { kAudioDevicePropertyVolumeScalar, kAudioDevicePropertyScopeOutput,
+                                           kAudioObjectPropertyElementMain };
+    if (AudioObjectGetPropertyData(device, &volAddr, 0, NULL, &size, &volume) != noErr)
+    {
+        volAddr.mElement = 1;
+        size = sizeof(volume);
+        if (AudioObjectGetPropertyData(device, &volAddr, 0, NULL, &size, &volume) != noErr)
+            return;  // 볼륨 제어가 없는 기기(인터페이스 등)는 확인할 게 없다.
+    }
+    if (volume <= 0.001f)
+        printf("  !! %s 의 볼륨이 0이다 — 소리가 안 난다.\n", name);
+}
+
 static int containsNoCase(const char *haystack, const char *needle)
 {
     size_t nlen = strlen(needle);
@@ -253,6 +280,8 @@ static int createAggregate(const char *name, int deviceCount, char **deviceNames
         deviceName(dev, names[i], sizeof(names[i]));
         ins[i] = channelCount(dev, kAudioObjectPropertyScopeInput);
         outs[i] = channelCount(dev, kAudioObjectPropertyScopeOutput);
+        if (outs[i] > 0)
+            warnIfSilenced(dev, names[i]);
         // 마스터(첫 번째)만 자기 클럭을 쓰고 나머지는 드리프트 보정을 켠다.
         subs[i] = subDeviceDict(uids[i], i == 0 ? 0 : 1);
     }
