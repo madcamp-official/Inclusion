@@ -24,6 +24,7 @@
 
 #include <juce_audio_formats/juce_audio_formats.h>
 
+#include "PitchAccuracyMetrics.h"
 #include "mode2_guitar_vocoder/Mode2Controller.h"
 #include "mode2_guitar_vocoder/WorldVoiceTransformer.h"
 #include "params/Mode2Params.h"
@@ -350,6 +351,63 @@ int main(int argc, char* argv[])
                   << "   0.25반음 초과 " << juce::String(100.0 * over[0] / deltas.size(), 1)
                   << "%   0.5반음 초과 " << juce::String(100.0 * over[1] / deltas.size(), 1)
                   << "%   1.0반음 초과 " << juce::String(100.0 * over[2] / deltas.size(), 1) << "%\n";
+    }
+
+    // 출력을 다시 F0 분석해 "의도한 목표"가 아니라 "실제로 나간 음정"을 잰다.
+    //
+    // 정렬 지연에 보컬 지연 버퍼(vocalControlLookahead)는 넣지 않는다. 그건 보컬 오디오를
+    // 늦춰 피치 분석 시점과 맞추는 것이고, 목표는 지연되지 않은 기타 경로에서 오기 때문이다.
+    // 출력 t의 음정을 정한 것은 시프터가 그 오디오를 소비하던 시점의 보정량이므로, 목표
+    // 궤적과의 정렬 지연은 시프터 고유 지연뿐이다.
+    //
+    // 그마저도 상한에 가깝다. PitchShifterEngine::reset()이 Rubber Band의 start delay만큼을
+    // 미리 버려 보상하므로 실제 지연은 이보다 짧게 나온다. WORLD 오프라인 경로는 입력과
+    // 샘플 정렬된 결과를 만들므로 0이다.
+    const int nominalLag = opt.useWorld ? 0 : controller.getPitchShifterLatencySamples();
+    const int searchRadius = static_cast<int>(std::lround(0.120 * sampleRate));
+    const auto accuracy = PitchAccuracyMetrics::measure(output.getReadPointer(0), numSamples,
+                                                        sampleRate, absoluteTargetF0Trace,
+                                                        nominalLag, searchRadius);
+
+    if (accuracy.valid)
+    {
+        const double toMs = 1000.0 / sampleRate;
+        std::cout << "출력 음정 정확도 (출력을 다시 F0 분석해 기타 목표와 비교):\n"
+                  << "   표본 " << accuracy.comparedFrames << "프레임"
+                  << " (유성 " << accuracy.voicedFrames << " / 전체 " << accuracy.totalFrames << ")"
+                  // juce::String(const char*)는 UTF-8 리터럴을 ASCII로 오해해 한글을 깨뜨린다.
+                  // 한글은 std::cout으로 직접 내보내고 숫자만 juce::String으로 만든다.
+                  << "  정렬 지연 ";
+        if (accuracy.lagIdentifiable)
+            std::cout << "실측 " << juce::String(accuracy.bestLagSamples * toMs, 1) << "ms";
+        else
+            std::cout << "식별 불가(이론값 사용)";
+
+        std::cout << " (이론 " << juce::String(accuracy.nominalLagSamples * toMs, 1) << "ms)\n"
+                  << "   ±50 cents 이내 " << juce::String(accuracy.withinFiftyCentsPercent, 1)
+                  << "%   ±20 cents 이내 " << juce::String(accuracy.withinTwentyCentsPercent, 1) << "%\n"
+                  << "   |오차| 중앙값 " << juce::String(accuracy.medianAbsCents, 1)
+                  << " cents  상위10% " << juce::String(accuracy.p90AbsCents, 1) << " cents\n"
+                  << "   계통 오차(부호 있는 중앙값) " << juce::String(accuracy.medianSignedCents, 1)
+                  << " cents   옥타브 오류(|오차|>600c) "
+                  << juce::String(accuracy.octaveErrorPercent, 1) << "%\n";
+
+        // 이론값은 상한이므로 실측이 그보다 짧은 것은 정상이다(start delay 보상). 반대로
+        // 이론값을 넘어서면 어디선가 계산에 없는 지연이 붙었다는 뜻이라 확인이 필요하다.
+        // 지연을 식별할 수 없는 녹음(같은 음을 오래 끄는 연주)에서는 판정하지 않는다.
+        const double lagExcessMs = (accuracy.bestLagSamples - accuracy.nominalLagSamples) * toMs;
+        if (accuracy.lagIdentifiable && lagExcessMs > 15.0)
+            std::cout << "   경고: 실측 지연이 이론 상한보다 "
+                      << juce::String(lagExcessMs, 1) << "ms 길다 — 계산에 없는 지연이 있다\n";
+        else if (! accuracy.lagIdentifiable)
+            std::cout << "   참고: 목표 음이 오래 유지돼 지연을 식별할 수 없다(동점 구간 "
+                      << juce::String(accuracy.lagPlateauSamples * toMs, 0)
+                      << "ms). 음이 자주 바뀌는 녹음이면 실측된다\n";
+    }
+    else
+    {
+        std::cout << "출력 음정 정확도: 비교 가능한 프레임이 부족해 측정하지 못했다"
+                     " (출력이 무음이거나 기타 목표가 잡히지 않음)\n";
     }
 
     std::cout << "-> " << outFile.getFullPathName() << "\n";

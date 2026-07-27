@@ -130,6 +130,7 @@ juce_add_console_app(Mode2Offline
 
 target_sources(Mode2Offline PRIVATE
     tools/Mode2Offline.cpp
+    tools/PitchAccuracyMetrics.cpp
     src/core/dsp/OnsetDetector.cpp
     src/core/dsp/PitchDetector.cpp
     src/core/dsp/PitchStabilizer.cpp
@@ -145,7 +146,7 @@ target_sources(Mode2Offline PRIVATE
     src/mode2_guitar_vocoder/Mode2Controller.cpp
 )
 
-target_include_directories(Mode2Offline PRIVATE src)
+target_include_directories(Mode2Offline PRIVATE src tools)
 
 target_compile_definitions(Mode2Offline PRIVATE
     JUCE_WEB_BROWSER=0
