@@ -7,3 +7,27 @@ cmake-build-*/
 *.obj
 *.exe
 *.pdb
+
+# Local ML environments, checkpoints, and downloaded repositories
+external/seed-vc/
+
+# User/song audio and derived score data are local-only
+assets/midi_to_split/*
+!assets/midi_to_split/.gitkeep
+assets/midi_to_split/output/
+*.wav
+*.mp3
+*.flac
+*.mid
+*.midi
+
+# Model weights, indices, credentials, and Python caches
+*.pth
+*.pt
+*.ckpt
+*.onnx
+*.index
+*.pem
+*.ppk
+**/__pycache__/
+*.py[cod]
