@@ -6,13 +6,19 @@
 void PitchShifterEngine::prepare(double sampleRateIn, int maxBlockSize)
 {
     sampleRate = sampleRateIn;
-    const float ratePerSecond = mode2::params::maxCorrectionSemitones / mode2::params::shiftRampSeconds;
-    maxShiftChangePerSample = ratePerSecond / static_cast<float>(sampleRate);
 
 #ifdef HAVE_SOUNDTOUCH
     soundTouch.setSampleRate(static_cast<uint>(sampleRateIn));
     soundTouch.setChannels(1);
     soundTouch.setPitchSemiTones(0.0);
+
+    // auto 모드를 쓰지 않고 짧은 시퀀스를 명시한다. auto는 tempo=1.0에서 sequence를 73ms로
+    // 잡는데, 시프트량 변경이 시퀀스 경계에서만 반영되므로 빠른 음 변화가 뭉개진다.
+    soundTouch.setSetting(SETTING_SEQUENCE_MS, mode2::params::pitchShiftSequenceMs);
+    soundTouch.setSetting(SETTING_SEEKWINDOW_MS, mode2::params::pitchShiftSeekWindowMs);
+    soundTouch.setSetting(SETTING_OVERLAP_MS, mode2::params::pitchShiftOverlapMs);
+    soundTouch.setSetting(SETTING_USE_QUICKSEEK, mode2::params::pitchShiftUseQuickSeek ? 1 : 0);
+
     receiveScratch.assign(static_cast<size_t>(maxBlockSize) * 4, 0.0f);
 #else
     (void) maxBlockSize;
@@ -32,7 +38,9 @@ void PitchShifterEngine::reset()
 
 void PitchShifterEngine::processBlock(const float* input, float* output, int numSamples, float requestedSemitones)
 {
-    const float maxDelta = maxShiftChangePerSample * static_cast<float>(numSamples);
+    // 글라이드 속도는 실행 중에 바뀔 수 있으므로 매 블록 읽는다.
+    const float perSample = glideSemitonesPerSecond.load() / static_cast<float>(sampleRate);
+    const float maxDelta = perSample * static_cast<float>(numSamples);
     const float diff = requestedSemitones - currentShiftSemitones;
     if (diff > maxDelta)
         currentShiftSemitones += maxDelta;

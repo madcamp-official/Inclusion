@@ -39,6 +39,8 @@ private:
     long long samplesInState = 0;
     float lastValidMidi = 0.0f;
     int collectedStableCount = 0;
+    // STABLE에서 목표를 벗어난 피치가 연속으로 몇 블록 관측됐는지(온셋 없는 음 변화 감지용).
+    int stableDeviationBlocks = 0;
 
     bool haveConfirmedTarget = false;
     float confirmedTargetMidi = 0.0f;

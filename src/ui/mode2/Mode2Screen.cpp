@@ -56,11 +56,34 @@ Mode2Screen::Mode2Screen(Mode2Controller& controllerIn)
     addAndMakeVisible(outputLevelLabel);
     addAndMakeVisible(outputLevelBar);
 
+    targetOctaveLabel.setText(utf8("목표 옥타브 이동 (0 = 기타 음 그대로)"), juce::dontSendNotification);
+    targetOctaveLabel.setJustificationType(juce::Justification::centredLeft);
+    addAndMakeVisible(targetOctaveLabel);
+    targetOctaveSlider.setRange(mode2::params::targetOctaveShiftMin, mode2::params::targetOctaveShiftMax, 1.0);
+    targetOctaveSlider.setValue(mode2::params::targetOctaveShift, juce::dontSendNotification);
+    targetOctaveSlider.onValueChange = [this]
+    {
+        controller.setTargetOctaveShift(static_cast<int>(targetOctaveSlider.getValue()));
+    };
+    addAndMakeVisible(targetOctaveSlider);
+
+    glideLabel.setText(utf8("글라이드 속도 (낮추면 레가토, 반음/초)"), juce::dontSendNotification);
+    glideLabel.setJustificationType(juce::Justification::centredLeft);
+    addAndMakeVisible(glideLabel);
+    glideSlider.setRange(mode2::params::glideRateMin, mode2::params::glideRateMax, 1.0);
+    glideSlider.setValue(mode2::params::defaultGlideSemitonesPerSecond, juce::dontSendNotification);
+    glideSlider.onValueChange = [this]
+    {
+        controller.setGlideRate(static_cast<float>(glideSlider.getValue()));
+    };
+    addAndMakeVisible(glideSlider);
+
     vocalGainLabel.setText(utf8("목소리 입력 부스트"), juce::dontSendNotification);
     vocalGainLabel.setJustificationType(juce::Justification::centredLeft);
     addAndMakeVisible(vocalGainLabel);
     vocalGainSlider.setRange(1.0, 40.0, 0.1);
-    vocalGainSlider.setValue(1.0, juce::dontSendNotification);
+    // 컨트롤러 기본값과 같은 상수를 쓴다(둘이 어긋나면 화면 값과 실제 게인이 달라진다).
+    vocalGainSlider.setValue(mode2::params::defaultVocalInputGain, juce::dontSendNotification);
     vocalGainSlider.onValueChange = [this]
     {
         controller.setVocalInputGain(static_cast<float>(vocalGainSlider.getValue()));
@@ -71,7 +94,8 @@ Mode2Screen::Mode2Screen(Mode2Controller& controllerIn)
     outputVolumeLabel.setJustificationType(juce::Justification::centredLeft);
     addAndMakeVisible(outputVolumeLabel);
     outputVolumeSlider.setRange(0.0, 2.0, 0.01);
-    outputVolumeSlider.setValue(1.0, juce::dontSendNotification);
+    // 컨트롤러 기본값과 같은 상수를 쓴다(둘이 어긋나면 화면 값과 실제 볼륨이 달라진다).
+    outputVolumeSlider.setValue(mode2::params::defaultOutputVolume, juce::dontSendNotification);
     outputVolumeSlider.onValueChange = [this]
     {
         controller.setOutputVolume(static_cast<float>(outputVolumeSlider.getValue()));
@@ -107,8 +131,20 @@ Mode2Screen::Mode2Screen(Mode2Controller& controllerIn)
     };
     addAndMakeVisible(noiseGateSlider);
 
-    howlGuardButton.setButtonText(utf8("하울링 억제 (헤드폰이면 끄세요)"));
-    howlGuardButton.setToggleState(true, juce::dontSendNotification);
+    bleedCancelButton.setButtonText(utf8("기타 유입 상쇄 (목소리 마이크가 기타를 주울 때)"));
+    bleedCancelButton.setToggleState(mode2::params::defaultBleedCancelEnabled, juce::dontSendNotification);
+    bleedCancelButton.onClick = [this]
+    {
+        controller.setBleedCancelEnabled(bleedCancelButton.getToggleState());
+    };
+    addAndMakeVisible(bleedCancelButton);
+
+    bleedCancelStatusLabel.setJustificationType(juce::Justification::centredLeft);
+    addAndMakeVisible(bleedCancelStatusLabel);
+
+    howlGuardButton.setButtonText(utf8("하울링 억제 (스피커로 모니터링할 때만 켜세요)"));
+    // 컨트롤러 기본값과 같은 상수를 쓴다(어긋나면 화면 표시와 실제 동작이 달라진다).
+    howlGuardButton.setToggleState(mode2::params::defaultHowlGuardEnabled, juce::dontSendNotification);
     howlGuardButton.onClick = [this]
     {
         controller.setHowlGuardEnabled(howlGuardButton.getToggleState());
@@ -140,6 +176,19 @@ Mode2Screen::Mode2Screen(Mode2Controller& controllerIn)
     resetCalibrationButton.setButtonText(utf8("게인 상한 리셋"));
     resetCalibrationButton.onClick = [this] { controller.resetCalibration(); };
     addAndMakeVisible(resetCalibrationButton);
+
+    recordButton.setButtonText(utf8("녹음 시작"));
+    recordButton.onClick = [this]
+    {
+        if (! onToggleRecording)
+            return;
+        const bool recording = onToggleRecording();
+        recordButton.setButtonText(recording ? utf8("녹음 중지 (녹음 중...)") : utf8("녹음 시작"));
+        recordButton.setColour(juce::TextButton::buttonColourId,
+                               recording ? juce::Colours::darkred
+                                         : getLookAndFeel().findColour(juce::TextButton::buttonColourId));
+    };
+    addAndMakeVisible(recordButton);
 
     startTimerHz(15);
 }
@@ -236,6 +285,17 @@ void Mode2Screen::timerCallback()
     }
     notchLabel.setText(notchText, juce::dontSendNotification);
 
+    // 제거량은 노래를 쉬고 기타만 칠 때가 실제 값이다. 노래 중에는 목소리가 분모에 그대로
+    // 남아 0dB 근처로 보이므로, 그 상황을 안내 문구로 구분해준다.
+    if (! bleedCancelButton.getToggleState())
+        bleedCancelStatusLabel.setText(utf8("   유입 상쇄 꺼짐"), juce::dontSendNotification);
+    else if (! state.bleedCancelAdapting)
+        bleedCancelStatusLabel.setText(utf8("   기타 입력 대기 중 (학습 정지)"), juce::dontSendNotification);
+    else
+        bleedCancelStatusLabel.setText(utf8("   제거량 ") + juce::String(state.bleedCancelledDb, 1)
+                                           + utf8("dB (노래 쉬고 기타만 칠 때 값이 정확)"),
+                                       juce::dontSendNotification);
+
     calibrateButton.setButtonText(state.calibrating ? utf8("캘리브레이션 중...") : utf8("캘리브레이션 시작"));
     calibrateButton.setEnabled(!state.calibrating);
 }
@@ -268,10 +328,17 @@ void Mode2Screen::resized()
     outputLevelLabel.setBounds(area.removeFromTop(20));
     outputLevelBar.setBounds(area.removeFromTop(14));
     area.removeFromTop(8);
+    targetOctaveLabel.setBounds(area.removeFromTop(18));
+    targetOctaveSlider.setBounds(area.removeFromTop(24));
+    glideLabel.setBounds(area.removeFromTop(18));
+    glideSlider.setBounds(area.removeFromTop(24));
     vocalGainLabel.setBounds(area.removeFromTop(18));
     vocalGainSlider.setBounds(area.removeFromTop(24));
     outputVolumeLabel.setBounds(area.removeFromTop(18));
     outputVolumeSlider.setBounds(area.removeFromTop(24));
+    area.removeFromTop(4);
+    bleedCancelButton.setBounds(area.removeFromTop(22));
+    bleedCancelStatusLabel.setBounds(area.removeFromTop(18));
     area.removeFromTop(4);
     noiseGateButton.setBounds(area.removeFromTop(22));
     noiseGateSlider.setBounds(area.removeFromTop(24));
@@ -288,7 +355,9 @@ void Mode2Screen::resized()
     area.removeFromTop(8);
     {
         auto row = area.removeFromTop(34);
-        calibrateButton.setBounds(row.removeFromLeft(row.getWidth() / 2).reduced(0, 0));
-        resetCalibrationButton.setBounds(row.reduced(6, 0));
+        const int third = row.getWidth() / 3;
+        calibrateButton.setBounds(row.removeFromLeft(third));
+        resetCalibrationButton.setBounds(row.removeFromLeft(third).reduced(6, 0));
+        recordButton.setBounds(row.reduced(6, 0));
     }
 }

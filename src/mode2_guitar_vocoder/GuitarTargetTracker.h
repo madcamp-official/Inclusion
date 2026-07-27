@@ -21,8 +21,14 @@ public:
 
     Output processBlock(const float* guitarSamples, int numSamples);
 
+    // 기타 목표는 "검출된 순간 주파수"가 아니라 연주한 음표여야 한다. 반음 경계에서
+    // 검출 지터로 두 음이 왕복하지 않도록 직전 음표 중심의 히스테리시스를 적용한다.
+    static float quantizeMidiWithHysteresis(float midi, bool havePreviousNote, float previousNote);
+
 private:
     OnsetDetector onsetDetector;
     PitchDetector pitchDetector;
     PitchStabilizer pitchStabilizer;
+    bool haveQuantizedNote = false;
+    float quantizedNoteMidi = 0.0f;
 };

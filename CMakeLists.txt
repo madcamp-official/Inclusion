@@ -32,6 +32,8 @@ endif()
 juce_add_gui_app(VocalGuitarApp
     PRODUCT_NAME "Vocal Guitar App"
     COMPANY_NAME "MadCamp"
+    MICROPHONE_PERMISSION_ENABLED TRUE
+    MICROPHONE_PERMISSION_TEXT "기타/보컬 입력을 처리하려면 마이크(오디오 인터페이스) 접근 권한이 필요합니다."
 )
 
 target_sources(VocalGuitarApp PRIVATE
@@ -44,6 +46,7 @@ target_sources(VocalGuitarApp PRIVATE
     src/core/audio/FeedbackCalibrator.cpp
     src/core/audio/FeedbackNotchSuppressor.cpp
     src/mode2_guitar_vocoder/CorrectionCalculator.cpp
+    src/mode2_guitar_vocoder/GuitarBleedCanceller.cpp
     src/mode2_guitar_vocoder/GuitarTargetTracker.cpp
     src/mode2_guitar_vocoder/PitchShifterEngine.cpp
     src/mode2_guitar_vocoder/Mode2Controller.cpp
@@ -79,6 +82,48 @@ if(HAVE_SOUNDTOUCH)
     target_compile_definitions(VocalGuitarApp PRIVATE HAVE_SOUNDTOUCH=1)
 endif()
 
+# --- Mode 2 오프라인 재현 도구 -------------------------------------------
+# 앱이 녹음한 입력 WAV를 앱과 같은 DSP에 통과시켜, 파라미터만 바꿔가며 결과를 비교할 수 있게 한다.
+juce_add_console_app(Mode2Offline
+    PRODUCT_NAME "Mode2Offline"
+)
+
+target_sources(Mode2Offline PRIVATE
+    tools/Mode2Offline.cpp
+    src/core/dsp/OnsetDetector.cpp
+    src/core/dsp/PitchDetector.cpp
+    src/core/dsp/PitchStabilizer.cpp
+    src/core/dsp/NoiseGate.cpp
+    src/core/audio/FeedbackCalibrator.cpp
+    src/core/audio/FeedbackNotchSuppressor.cpp
+    src/mode2_guitar_vocoder/CorrectionCalculator.cpp
+    src/mode2_guitar_vocoder/GuitarBleedCanceller.cpp
+    src/mode2_guitar_vocoder/GuitarTargetTracker.cpp
+    src/mode2_guitar_vocoder/PitchShifterEngine.cpp
+    src/mode2_guitar_vocoder/Mode2Controller.cpp
+)
+
+target_include_directories(Mode2Offline PRIVATE src)
+
+target_compile_definitions(Mode2Offline PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+)
+
+target_link_libraries(Mode2Offline
+    PRIVATE
+        juce::juce_audio_formats
+        juce::juce_dsp
+    PUBLIC
+        juce::juce_recommended_config_flags
+        juce::juce_recommended_warning_flags
+)
+
+if(HAVE_SOUNDTOUCH)
+    target_link_libraries(Mode2Offline PRIVATE SoundTouch)
+    target_compile_definitions(Mode2Offline PRIVATE HAVE_SOUNDTOUCH=1)
+endif()
+
 # --- Mode 2 unit tests ---------------------------------------------------
 juce_add_console_app(Mode2Tests
     PRODUCT_NAME "Mode2Tests"
@@ -91,6 +136,7 @@ target_sources(Mode2Tests PRIVATE
     src/core/dsp/PitchStabilizer.cpp
     src/core/dsp/NoiseGate.cpp
     src/mode2_guitar_vocoder/CorrectionCalculator.cpp
+    src/mode2_guitar_vocoder/GuitarBleedCanceller.cpp
     src/mode2_guitar_vocoder/GuitarTargetTracker.cpp
     src/mode2_guitar_vocoder/PitchShifterEngine.cpp
 )

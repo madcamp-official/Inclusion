@@ -2,6 +2,8 @@
 
 #include <juce_dsp/juce_dsp.h>
 
+#include "params/Mode2Params.h"
+
 #include <array>
 #include <vector>
 
@@ -61,7 +63,9 @@ private:
     };
 
     double sampleRate = 44100.0;
-    bool enabled = true;
+    // Mode2Controller의 하울링 억제 토글과 기본값이 어긋나면(토글은 off인데 노치는 on) 노치가
+    // 배음을 계속 깎는다. setEnabled 호출 전에도 일치하도록 같은 기본값을 쓴다.
+    bool enabled = mode2::params::defaultHowlGuardEnabled;
 
     juce::dsp::FFT fft { fftOrder };
     std::vector<float> fftScratch;      // 2 * fftSize (juce FFT 요구)

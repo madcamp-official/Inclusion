@@ -1,5 +1,8 @@
 #pragma once
 
+#include "params/Mode2Params.h"
+
+#include <atomic>
 #include <vector>
 
 #ifdef HAVE_SOUNDTOUCH
@@ -23,10 +26,14 @@ public:
 
     float getCurrentShiftSemitones() const { return currentShiftSemitones; }
 
+    // 글라이드(포르타멘토) 속도, 반음/초. 목표가 바뀔 때 그 음까지 미끄러지는 빠르기다.
+    // UI 스레드에서 호출되고 오디오 스레드가 읽으므로 atomic이다.
+    void setGlideRate(float semitonesPerSecond) { glideSemitonesPerSecond.store(semitonesPerSecond); }
+
 private:
     double sampleRate = 44100.0;
     float currentShiftSemitones = 0.0f;
-    float maxShiftChangePerSample = 0.0f;
+    std::atomic<float> glideSemitonesPerSecond { mode2::params::defaultGlideSemitonesPerSecond };
 
 #ifdef HAVE_SOUNDTOUCH
     soundtouch::SoundTouch soundTouch;

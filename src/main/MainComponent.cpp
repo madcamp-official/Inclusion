@@ -4,6 +4,11 @@
 #include <algorithm>
 #include <cmath>
 
+// 입력 채널 RMS 진단 로그. 채널 배선이나 기타 유입을 쫓을 때만 켠다(-DMODE2_DIAGNOSTIC_LOG=1).
+#ifndef MODE2_DIAGNOSTIC_LOG
+ #define MODE2_DIAGNOSTIC_LOG 0
+#endif
+
 namespace
 {
     // 8비트 리터럴을 ASCII로 오해하는 juce::String(const char*) 대신 UTF-8로 명시 변환한다.
@@ -46,16 +51,20 @@ MainComponent::MainComponent()
         vocalChannelIndex.store(vocalChannel);
         saveChannelMap();
     };
+    mode2Screen.onToggleRecording = [this] { return toggleRecording(); };
     refreshChannelChoices();
     addChildComponent(mode2Screen);
 
-    setSize(620, 740);
+    // Mode2Screen의 컨트롤이 모두 들어가야 한다(현재 레이아웃 합계 약 744px + 여유).
+    setSize(620, 800);
 }
 
 MainComponent::~MainComponent()
 {
     deviceManager.removeChangeListener(this);
     shutdownAudio();
+    stopRecording();
+    recorderThread.stopThread(2000);
 }
 
 void MainComponent::showMode2()
@@ -128,9 +137,10 @@ void MainComponent::updateLatencyInfo()
     const double toMs = 1000.0 / sr;
     const double inputMs = static_cast<double>(device->getInputLatencyInSamples()) * toMs;
     const double outputMs = static_cast<double>(device->getOutputLatencyInSamples()) * toMs;
-    // 우리가 의도적으로 넣은 목소리 지연(5절 장치 ①) + 콜백 블록 1개분.
-    const double processingMs = static_cast<double>(device->getCurrentBufferSizeSamples())
-                               * (1 + mode2::params::vocalArtificialDelayBlocks) * toMs;
+    // 제어 lookahead용 목소리 지연 + 콜백 블록 1개분.
+    const double processingMs =
+        static_cast<double>(device->getCurrentBufferSizeSamples()) * toMs
+        + 1000.0 * mode2::params::vocalControlLookaheadSeconds;
 
     mode2Screen.setLatencyInfo(inputMs, outputMs, processingMs);
 }
@@ -192,8 +202,69 @@ void MainComponent::loadChannelMap()
     }
 }
 
+juce::File MainComponent::getRecordingsDirectory()
+{
+    return juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+        .getChildFile("VocalGuitarApp")
+        .getChildFile("recordings");
+}
+
+void MainComponent::startRecording()
+{
+    stopRecording();
+
+    const auto dir = getRecordingsDirectory();
+    dir.createDirectory();
+    recordingFile = dir.getChildFile("mode2_" + juce::Time::getCurrentTime().formatted("%Y%m%d_%H%M%S") + ".wav");
+    recordingFile.deleteFile();
+
+    auto stream = std::unique_ptr<juce::FileOutputStream>(recordingFile.createOutputStream());
+    if (stream == nullptr)
+        return;
+
+    juce::WavAudioFormat wav;
+    // ch0 = 기타 입력, ch1 = 목소리 입력(부스트 전), ch2 = 최종 출력.
+    auto* writer = wav.createWriterFor(stream.get(), currentSampleRate, 3, 24, {}, 0);
+    if (writer == nullptr)
+        return;
+
+    stream.release(); // writer가 소유권을 가져간다.
+    threadedWriter.reset(new juce::AudioFormatWriter::ThreadedWriter(writer, recorderThread, 65536));
+
+    const juce::ScopedLock sl(writerLock);
+    activeWriter = threadedWriter.get();
+}
+
+void MainComponent::stopRecording()
+{
+    {
+        const juce::ScopedLock sl(writerLock);
+        activeWriter = nullptr;
+    }
+    threadedWriter.reset();
+}
+
+bool MainComponent::isRecording() const
+{
+    return threadedWriter != nullptr;
+}
+
+bool MainComponent::toggleRecording()
+{
+    if (isRecording())
+        stopRecording();
+    else
+        startRecording();
+
+    return isRecording();
+}
+
 void MainComponent::prepareToPlay(int samplesPerBlockExpected, double sampleRate)
 {
+    currentSampleRate = sampleRate;
+    if (! recorderThread.isThreadRunning())
+        recorderThread.startThread();
+
     mode2Controller.prepare(sampleRate, samplesPerBlockExpected);
     guitarInputScratch.assign(static_cast<size_t>(samplesPerBlockExpected), 0.0f);
     vocalInputScratch.assign(static_cast<size_t>(samplesPerBlockExpected), 0.0f);
@@ -228,28 +299,48 @@ void MainComponent::getNextAudioBlock(const juce::AudioSourceChannelInfo& buffer
     std::copy(guitarRead, guitarRead + numSamples, guitarInputScratch.begin());
     std::copy(vocalRead, vocalRead + numSamples, vocalInputScratch.begin());
 
+#if MODE2_DIAGNOSTIC_LOG
     {
-        static int callCount = 0;
-        if (++callCount % 50 == 0)
+        // 통합기기의 채널 순서가 바뀌었는지, 아니면 마이크가 기타를 줍는지 구분하기 위해
+        // 전체 입력 채널의 RMS를 찍는다.
+        static int chLogCount = 0;
+        if (++chLogCount % 24 == 0)
         {
-            float guitarPeak = 0.0f, vocalPeak = 0.0f;
-            for (int i = 0; i < numSamples; ++i)
+            juce::String line = "[CH] ";
+            for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
             {
-                guitarPeak = std::max(guitarPeak, std::abs(guitarRead[i]));
-                vocalPeak = std::max(vocalPeak, std::abs(vocalRead[i]));
+                const float* read = buffer.getReadPointer(ch, startSample);
+                double ss = 0.0;
+                for (int i = 0; i < numSamples; ++i)
+                    ss += static_cast<double>(read[i]) * read[i];
+                line += "ch" + juce::String(ch) + "=" + juce::String(std::sqrt(ss / numSamples), 5) + "  ";
             }
-            juce::Logger::writeToLog("[DBG] guitarPeak=" + juce::String(guitarPeak, 5) + " vocalPeak=" + juce::String(vocalPeak, 5));
+            line += "(기타=ch" + juce::String(guitarChannel) + " 목소리=ch" + juce::String(vocalChannel) + ")";
+            juce::Logger::writeToLog(line);
         }
     }
+#endif
 
     float* outL = buffer.getWritePointer(0, startSample);
     float* outR = buffer.getWritePointer(1, startSample);
 
     mode2Controller.processBlock(guitarInputScratch.data(), vocalInputScratch.data(), outL, outR, numSamples);
+
+    {
+        // 진단 녹음: 기타 입력 / 목소리 입력 / 최종 출력을 한 파일에 남긴다.
+        // ThreadedWriter::write는 락 없는 FIFO에 밀어넣기만 하므로 오디오 스레드에서 안전하다.
+        const juce::ScopedTryLock stl(writerLock);
+        if (stl.isLocked() && activeWriter != nullptr)
+        {
+            const float* channels[3] = { guitarInputScratch.data(), vocalInputScratch.data(), outL };
+            activeWriter->write(channels, numSamples);
+        }
+    }
 }
 
 void MainComponent::releaseResources()
 {
+    stopRecording();
     mode2Controller.reset();
 }
 

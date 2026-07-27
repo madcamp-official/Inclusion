@@ -4,9 +4,13 @@
 #include <cmath>
 #include <cstring>
 
-void PitchDetector::prepare(double sampleRateIn)
+void PitchDetector::prepare(double sampleRateIn, float minFrequencyHzIn, float maxFrequencyHzIn,
+                            int analysisWindowSizeIn)
 {
     sampleRate = sampleRateIn;
+    minFrequencyHz = minFrequencyHzIn;
+    maxFrequencyHz = std::max(minFrequencyHzIn * 1.5f, maxFrequencyHzIn);
+    analysisWindowSize = std::max(256, analysisWindowSizeIn);
     minLag = static_cast<int>(sampleRate / maxFrequencyHz);
     maxLag = static_cast<int>(sampleRate / minFrequencyHz);
     minLag = std::max(minLag, 1);

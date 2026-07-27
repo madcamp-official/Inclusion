@@ -26,6 +26,14 @@ public:
     void paint(juce::Graphics& g) override;
     void resized() override;
 
+public:
+    // 진단용 3채널 녹음(기타 입력 / 목소리 입력 / 최종 출력). 입력까지 함께 남기면 같은 연주로
+    // 파라미터를 바꿔가며 오프라인 재현할 수 있어, 매번 다시 연주하지 않아도 된다.
+    // 오디오 스레드에서 디스크를 만지면 안 되므로 JUCE의 ThreadedWriter를 쓴다.
+    bool toggleRecording();
+    bool isRecording() const;
+    juce::File getLastRecordingFile() const { return recordingFile; }
+
 private:
     void showMode2();
     void showAudioSettings();
@@ -58,6 +66,17 @@ private:
 
     std::vector<float> guitarInputScratch;
     std::vector<float> vocalInputScratch;
+
+    // 진단 녹음. activeWriter는 오디오 스레드가 읽으므로 writerLock으로 보호한다.
+    juce::TimeSliceThread recorderThread { "VocalGuitarApp wav writer" };
+    std::unique_ptr<juce::AudioFormatWriter::ThreadedWriter> threadedWriter;
+    juce::CriticalSection writerLock;
+    juce::AudioFormatWriter::ThreadedWriter* activeWriter = nullptr;
+    juce::File recordingFile;
+    double currentSampleRate = 48000.0;
+    static juce::File getRecordingsDirectory();
+    void startRecording();
+    void stopRecording();
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainComponent)
 };
