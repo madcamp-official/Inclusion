@@ -10,11 +10,15 @@
 class VocalDelayBuffer
 {
 public:
-    void prepare(double sampleRateIn, int /*blockSize*/)
+    void prepare(double sampleRateIn, int /*blockSize*/, float lookaheadSeconds)
     {
-        delayInSamples = std::max(
-            1, static_cast<int>(sampleRateIn * mode2::params::vocalControlLookaheadSeconds + 0.5));
+        delayInSamples = std::max(1, static_cast<int>(sampleRateIn * lookaheadSeconds + 0.5));
         ringBuffer.setSize(delayInSamples + 1);
+    }
+
+    void prepare(double sampleRateIn, int blockSize)
+    {
+        prepare(sampleRateIn, blockSize, mode2::params::vocalControlLookaheadSeconds);
     }
 
     void reset() { ringBuffer.clear(); }

@@ -38,7 +38,7 @@ void Mode2Controller::prepare(double sampleRateIn, int maxBlockSize)
                                mode2::params::vocalPitchMaxFrequencyHz,
                                mode2::params::scalePitchWindowForSampleRate(
                                    mode2::params::vocalPitchWindowSize, sampleRate));
-    vocalDelayBuffer.prepare(sampleRate, maxBlockSize);
+    vocalDelayBuffer.prepare(sampleRate, maxBlockSize, vocalControlLookaheadSeconds);
     pitchShifter.prepare(sampleRate, maxBlockSize);
     feedbackCalibrator.prepare(sampleRate);
     notchSuppressor.prepare(sampleRate, maxBlockSize);

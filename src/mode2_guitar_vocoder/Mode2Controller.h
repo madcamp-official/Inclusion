@@ -103,6 +103,8 @@ public:
     void setGlideRate(float semitonesPerSecond) { pitchShifter.setGlideRate(semitonesPerSecond); }
 
     // 오프라인 A/B용. prepare 전에 설정한다.
+    void setVocalControlLookahead(float seconds) { vocalControlLookaheadSeconds = seconds; }
+    float getVocalControlLookahead() const { return vocalControlLookaheadSeconds; }
     void setPitchShifterBackend(PitchShifterEngine::Backend backend) { pitchShifter.setBackend(backend); }
     PitchShifterEngine::Backend getPitchShifterBackend() const { return pitchShifter.getActiveBackend(); }
     int getPitchShifterLatencySamples() const { return pitchShifter.getLatencySamples(); }
@@ -180,6 +182,10 @@ private:
     int vocalPitchHistoryWrite = 0;
     std::vector<float> vocalPitchSortScratch;
     float medianVocalMidi(float newMidi);
+
+    // 제어 경로와 오디오 경로의 정렬량. 오프라인 스윕으로 최적값을 찾을 수 있게 런타임에
+    // 열어 뒀다(Mode2Offline의 --lookahead). 앱은 측정으로 정한 기본값을 그대로 쓴다.
+    float vocalControlLookaheadSeconds = mode2::params::vocalControlLookaheadSeconds;
 
     // 목소리 신뢰도 HOLD/FADE — 순간적인 신뢰도 하락에 원본 음정이 새어 나오지 않게,
     // 직전 보정과 완전 wet을 유지했다가 지속적으로 잃었을 때만 드라이로 되돌린다.

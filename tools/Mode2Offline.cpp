@@ -20,6 +20,7 @@
 //     --bleed=on|off   기타 유입 상쇄(목소리 채널에서 기타를 지운다)
 //     --trip=0.35      출력 트립 임계
 //     --block=512      블록 크기
+//     --lookahead=21.3 제어 경로와 오디오 경로의 정렬량(ms). 출력 음정 정확도로 스윕해 정한다
 //     --shifter=rubberband|soundtouch|world  피치 시프터 A/B (WORLD는 전체 파일 오프라인 처리)
 
 #include <juce_audio_formats/juce_audio_formats.h>
@@ -53,6 +54,7 @@ namespace
         int blockSize = 512;
         PitchShifterEngine::Backend shifter = PitchShifterEngine::Backend::RubberBand;
         bool useWorld = false;
+        float lookaheadMs = 1000.0f * mode2::params::vocalControlLookaheadSeconds;
     };
 
     bool matchFloat(const juce::String& arg, const char* key, float& out)
@@ -89,7 +91,7 @@ int main(int argc, char* argv[])
     if (argc < 3)
     {
         std::cout << "usage: Mode2Offline <input.wav> <output.wav> [--glide=N --boost=N --volume=N "
-                     "--octave=N --gate=N|off --howlguard=on|off --trip=N --block=N "
+                     "--octave=N --gate=N|off --howlguard=on|off --trip=N --block=N --lookahead=N "
                      "--shifter=rubberband|soundtouch|world]\n";
         return 1;
     }
@@ -107,6 +109,7 @@ int main(int argc, char* argv[])
         if (matchFloat(a, "trip", opt.trip)) continue;
         if (matchInt(a, "octave", opt.octave)) continue;
         if (matchInt(a, "block", opt.blockSize)) continue;
+        if (matchFloat(a, "lookahead", opt.lookaheadMs)) continue;
         if (a == "--gate=off") { opt.gateEnabled = false; continue; }
         if (matchFloat(a, "gate", opt.gate)) { opt.gateEnabled = true; continue; }
         if (a == "--howlguard=on")  { opt.howlGuard = true;  continue; }
@@ -160,6 +163,7 @@ int main(int argc, char* argv[])
 
     Mode2Controller controller;
     controller.setPitchShifterBackend(opt.shifter);
+    controller.setVocalControlLookahead(0.001f * opt.lookaheadMs);
     controller.prepare(sampleRate, block);
     if (! opt.useWorld && controller.getPitchShifterBackend() != opt.shifter)
     {
@@ -289,6 +293,7 @@ int main(int argc, char* argv[])
               << "  게이트=" << (opt.gateEnabled ? juce::String(opt.gate) : juce::String("off"))
               << "  하울링억제=" << (opt.howlGuard ? "on" : "off")
               << "  유입상쇄=" << (opt.bleedCancel ? "on" : "off")
+              << "  정렬=" << juce::String(opt.lookaheadMs, 1) << "ms"
               << "  시프터="
               << (opt.useWorld ? "world-offline"
                                : PitchShifterEngine::getBackendName(

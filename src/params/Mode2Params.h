@@ -43,11 +43,26 @@ namespace mode2::params
     constexpr float coastHoldSeconds = 0.35f;
     constexpr float coastFadeSeconds = 0.25f;
 
-    // VocalDelayBuffer 제어 lookahead. 보컬 피치는 지연 전 신호의 약 43ms 창으로 분석하므로
-    // 추정값은 창 중앙, 즉 현재보다 약 21ms 전의 음을 나타낸다. 실제 SoundTouch 입력을
-    // 같은 21ms만큼 늦추면 "분석한 음성"과 "지금 처리할 음성"의 시점이 일치한다.
-    // 블록 개수가 아니라 초로 고정해 장치 샘플레이트·버퍼 크기가 바뀌어도 정렬을 유지한다.
-    constexpr float vocalControlLookaheadSeconds = 0.021333333f;
+    // VocalDelayBuffer 제어 lookahead — 제어 경로(피치 추정)와 오디오 경로의 정렬량.
+    //
+    // 이전 값은 21.3ms였다. 근거는 "보컬 피치는 43ms 창으로 분석하니 추정값은 창 중앙,
+    // 즉 21ms 전의 음을 나타낸다. 오디오도 21ms 늦추면 시점이 맞는다"였다.
+    //
+    // 출력 음정 정확도 지표(tools/PitchAccuracyMetrics.*)로 실제로 쓸어보니 그 추론이 틀렸다.
+    // 오차는 정렬량에 대해 단조 증가했고 0에서 최소였다. 즉 이 검출기의 추정값은 창 중앙이
+    // 아니라 창의 최신 끝에 가깝게 대응한다. 오디오를 늦출수록 추정이 설명하는 음성보다
+    // 오래된 음성을 처리하게 되어 오차가 커진다.
+    //
+    // 합성 신호 2종(비브라토 있는 목소리 / 거기에 잡음 추가), Rubber Band, --octave=0:
+    //     정렬     21.3ms          10ms           5ms            0ms
+    //   중앙값   17.3 / 18.2   13.0 / 14.5   10.8 / 13.2    8.4 / 11.4 cents
+    //   ±20c내   61 / 55%      87 / 67%      94 / 71%       95 / 74%
+    // ±50 cents 이내 비율은 전 구간 97/95%로 평평했다. 즉 음 전환 품질은 손해 보지 않고
+    // 미세 정확도만 좋아진다. 덤으로 전체 지연이 21ms 줄어든다.
+    //
+    // 이 값은 Mode2Offline의 --lookahead로 다시 스윕할 수 있다. 실제 녹음으로 재검증할 때
+    // 값이 달라지면 그 결과를 따르면 된다.
+    constexpr float vocalControlLookaheadSeconds = 0.0f;
 
     // CorrectionCalculator
     // 1.0 = 목표 음에 완전히 붙인다. 1보다 작으면 오차의 (1-strength)만큼이 남는데, 그 잔차는
