@@ -40,7 +40,8 @@ Mode2Screen::Mode2Screen(Mode2Controller& controllerIn)
     addAndMakeVisible(guitarLevelBar);
     addAndMakeVisible(vocalLevelBar);
 
-    channelMapLabel.setText(utf8("입력 채널  기타 / 목소리"), juce::dontSendNotification);
+    channelMapLabel.setText(utf8("입력 채널  기타 / 목소리 / 녹음에 함께 담을 것(스피커 앞 마이크)"),
+                            juce::dontSendNotification);
     channelMapLabel.setJustificationType(juce::Justification::centredLeft);
     addAndMakeVisible(channelMapLabel);
 
@@ -54,9 +55,6 @@ Mode2Screen::Mode2Screen(Mode2Controller& controllerIn)
     addAndMakeVisible(guitarChannelBox);
     addAndMakeVisible(vocalChannelBox);
 
-    roomChannelLabel.setText(utf8("녹음에 함께 담을 채널 (스피커 앞 마이크)"), juce::dontSendNotification);
-    roomChannelLabel.setJustificationType(juce::Justification::centredLeft);
-    addAndMakeVisible(roomChannelLabel);
     // id 1 = 없음, id 2.. = 채널 1..  (선택 id - 2 가 채널 인덱스, 없음이면 -1)
     roomChannelBox.onChange = [this]
     {
@@ -385,13 +383,13 @@ void Mode2Screen::resized()
     area.removeFromTop(8);
     channelMapLabel.setBounds(area.removeFromTop(20));
     {
+        // 세 개를 한 줄에 넣는다. 줄을 따로 만들면 아래 버튼들이 창 밖으로 밀린다.
         auto row = area.removeFromTop(26);
-        guitarChannelBox.setBounds(row.removeFromLeft(row.getWidth() / 2).reduced(0, 0));
-        vocalChannelBox.setBounds(row.reduced(6, 0));
+        const int third = row.getWidth() / 3;
+        guitarChannelBox.setBounds(row.removeFromLeft(third));
+        vocalChannelBox.setBounds(row.removeFromLeft(third).reduced(6, 0));
+        roomChannelBox.setBounds(row.reduced(6, 0));
     }
-    area.removeFromTop(6);
-    roomChannelLabel.setBounds(area.removeFromTop(20));
-    roomChannelBox.setBounds(area.removeFromTop(26));
     area.removeFromTop(8);
     pitchShifterLabel.setBounds(area.removeFromTop(20));
     pitchShifterBox.setBounds(area.removeFromTop(28));

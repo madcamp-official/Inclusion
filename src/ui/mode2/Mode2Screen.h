@@ -63,7 +63,6 @@ private:
     juce::ComboBox guitarChannelBox;
     juce::ComboBox vocalChannelBox;
 
-    juce::Label roomChannelLabel;
     juce::ComboBox roomChannelBox;
 
     juce::Label pitchShifterLabel;
