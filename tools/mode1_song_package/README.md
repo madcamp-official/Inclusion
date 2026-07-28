@@ -198,3 +198,36 @@ handoff doc for reference timings).
 Once you have a `.pth` and index you're happy with, point
 `run_rvc_remote.py` / `run_rvc_variants_remote.py` at them with `--model`
 and `--index` to use the retrained voice for any song's conversion step.
+
+### Automatic app refresh after retraining
+
+The app's **목소리 재학습 시작** action now continues past model training:
+
+1. train the RVC model and index;
+2. analyze the new recording and choose the best of the song's vetted
+   `0/-6/-12` key anchors;
+3. render only expression strength 25 at that single key;
+4. resample to 48 kHz and build phrase/mora voice banks;
+5. validate every referenced audio file;
+6. atomically publish the new `song_package.json`.
+
+The legacy five-strength, multi-key-anchor implementation remains available
+with `refresh_song_package_after_training.py --full-variants`, but the app
+does not use it automatically because it requires 20 RVC renders instead of
+one.
+
+Generated audio is versioned under
+`build/mode1/<song>/generated_models/<experiment>/`. The previous package is
+kept as `song_package.before_<experiment>.json`. If conversion or validation
+fails, the currently playable package remains unchanged.
+
+The post-training stage can also be run independently:
+
+```powershell
+& .\external\seed-vc\venv\Scripts\python.exe `
+  tools\mode1_song_package\refresh_song_package_after_training.py `
+  --host <username@vpn-host> `
+  --experiment-name <rvc-experiment> `
+  --song-package build\mode1\<song>\song_package.json `
+  --user-voice <combined-guided-recording.wav>
+```

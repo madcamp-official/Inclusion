@@ -3,6 +3,7 @@
 #include "RecordingSessionScreen.h"
 #include "mode1_vocal_follower/Mode1Controller.h"
 #include "voice_capture/GuidedRecordingSession.h"
+#include "voice_capture/InputLevelCalibrator.h"
 #include "voice_capture/VoiceModelTrainer.h"
 #include "voice_capture/VoiceRecorder.h"
 
@@ -65,12 +66,17 @@ private:
     std::vector<float> guitarInputScratch;
     std::atomic<int> guitarChannelIndex { 0 };
     std::atomic<int> microphoneChannelIndex { 0 };
+    std::atomic<float> liveMicrophonePeak { 0.0f };
 
     mode1::Mode1Controller mode1Controller;
     voice_capture::VoiceRecorder voiceRecorder;
+    voice_capture::InputLevelCalibrator inputLevelCalibrator;
     voice_capture::GuidedRecordingSession guidedRecordingSession;
     voice_capture::VoiceModelTrainer voiceModelTrainer;
     bool trainingRequestedForSession = false;
+    std::atomic<bool> recordingPreflightActive { false };
+    float calibratedRoomToneDb = -100.0f;
+    float calibratedInputGain = 1.0f;
     juce::File lastReferenceFile;
     juce::File profileDirectory;
     juce::Array<juce::var> manifestClips;

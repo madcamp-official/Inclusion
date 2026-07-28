@@ -79,6 +79,19 @@ bool SongPackage::loadFromFile(const juce::File& packageFile, juce::String& erro
         keyAnchors.erase(
             std::unique(keyAnchors.begin(), keyAnchors.end()),
             keyAnchors.end());
+        if (const auto* manualRange =
+                keyObject->getProperty("manual_key_shift_range").getArray();
+            manualRange != nullptr && manualRange->size() >= 2)
+        {
+            manualKeyShiftMinimum =
+                static_cast<int>(manualRange->getUnchecked(0));
+            manualKeyShiftMaximum =
+                static_cast<int>(manualRange->getUnchecked(1));
+            if (manualKeyShiftMinimum > manualKeyShiftMaximum)
+                std::swap(
+                    manualKeyShiftMinimum, manualKeyShiftMaximum);
+            hasManualKeyShiftRange = true;
+        }
     }
     if (const auto* expressionObject =
             rootObject->getProperty("expression_style").getDynamicObject())
@@ -297,6 +310,9 @@ void SongPackage::clear()
     defaultExpressionStrength = 25;
     expressionStrengths = { 25 };
     keyAnchors = { 0 };
+    hasManualKeyShiftRange = false;
+    manualKeyShiftMinimum = -6;
+    manualKeyShiftMaximum = 6;
     phrases.clear();
 }
 

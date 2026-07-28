@@ -160,7 +160,7 @@ bool Mode1Controller::setManualKeyShift(
     juce::String* error)
 {
     const int clamped = juce::jlimit(
-        -6,
+        getMinimumManualKeyShift(),
         getMaximumManualKeyShift(),
         semitones);
     const int targetKeyShift = getBaseKeyShift() + clamped;

@@ -64,6 +64,8 @@ void RecordingSessionScreen::updateState(
     bool statusIsError)
 {
     state = newState;
+    calibrationMode = false;
+    retryButton.setButtonText(L"전체 다시 녹음");
     overallProgressValue = state.overallProgress;
     inputLevelValue = juce::jlimit(0.0, 1.0, static_cast<double>(inputLevelValue01));
 
@@ -93,9 +95,44 @@ void RecordingSessionScreen::updateState(
 
     retryButton.setEnabled(!state.sessionFinished);
     skipButton.setEnabled(!state.sessionFinished);
+    skipButton.setButtonText(
+        state.stage == voice_capture::GuidedRecordingStage::song
+                && state.stageProgressSeconds >= state.stageProgressTargetSeconds
+            ? L"전체 녹음 완료"
+            : L"말했어요 · 다음");
     cancelButton.setEnabled(true);
     cancelButton.setButtonText(state.sessionFinished ? L"완료 · 돌아가기" : L"세션 취소");
 
+    repaint();
+}
+
+void RecordingSessionScreen::updateCalibrationState(
+    const juce::String& instruction,
+    double progress,
+    float inputLevelValue01,
+    bool failed)
+{
+    calibrationMode = true;
+    calibrationInstruction = instruction;
+    calibrationFailed = failed;
+    overallProgressValue = juce::jlimit(0.0, 1.0, progress);
+    inputLevelValue =
+        juce::jlimit(0.0, 1.0, static_cast<double>(inputLevelValue01));
+    stageLabel.setText(L"마이크 자동 음량 맞춤", juce::dontSendNotification);
+    headingLabel.setText(
+        failed ? L"측정 실패" : L"녹음 전 약 5초만 확인할게요",
+        juce::dontSendNotification);
+    statusLabel.setColour(
+        juce::Label::textColourId,
+        failed ? juce::Colours::orange : juce::Colours::lightblue);
+    statusLabel.setText(instruction, juce::dontSendNotification);
+    retryButton.setButtonText(failed ? L"다시 측정" : L"측정 중...");
+    retryButton.setEnabled(failed);
+    skipButton.setEnabled(false);
+    cancelButton.setEnabled(true);
+    cancelButton.setButtonText(L"세션 취소");
+    startTrainingButton.setVisible(false);
+    trainingStatusLabel.setVisible(false);
     repaint();
 }
 
@@ -106,10 +143,47 @@ void RecordingSessionScreen::updateTrainingStatus(
     bool trainingSucceeded,
     const juce::String& trainingStatusLine)
 {
-    startTrainingButton.setVisible(availableToStart && !running && !trainingFinished);
-    startTrainingButton.setEnabled(availableToStart && !running && !trainingFinished);
+    if (running)
+    {
+        trainingHeadline = L"모델 학습 및 노래 변환 중";
+        stageLabel.setText(L"2/3 · 재학습 진행 중", juce::dontSendNotification);
+        headingLabel.setText(
+            L"완료까지 약 8분 걸립니다. 앱을 종료하지 마세요.",
+            juce::dontSendNotification);
+    }
+    else if (trainingFinished && trainingSucceeded)
+    {
+        trainingHeadline = L"새 목소리 학습 및 적용 완료";
+        stageLabel.setText(L"3/3 · 적용 완료", juce::dontSendNotification);
+        headingLabel.setText(
+            L"이제 Mode 1에서 새 목소리를 사용할 수 있습니다.",
+            juce::dontSendNotification);
+    }
+    else if (trainingFinished)
+    {
+        trainingHeadline = L"재학습 실패";
+        stageLabel.setText(L"학습 실패", juce::dontSendNotification);
+        headingLabel.setText(
+            L"아래 오류를 확인한 뒤 재시도할 수 있습니다.",
+            juce::dontSendNotification);
+    }
+    else
+    {
+        trainingHeadline = L"녹음 저장 완료 · 학습 시작 대기";
+        stageLabel.setText(L"1/3 · 녹음 저장 완료", juce::dontSendNotification);
+    }
+    cancelButton.setEnabled(!running);
+    cancelButton.setButtonText(
+        running ? L"학습 중 · 잠시 기다려 주세요" : L"완료 · 돌아가기");
 
-    const bool showStatus = running || trainingFinished;
+    const bool canStartOrRetry =
+        availableToStart && !running && trainingFinished && !trainingSucceeded;
+    startTrainingButton.setVisible(canStartOrRetry);
+    startTrainingButton.setEnabled(canStartOrRetry);
+    startTrainingButton.setButtonText(
+        L"재학습 다시 시도");
+
+    const bool showStatus = running || trainingFinished || !availableToStart;
     trainingStatusLabel.setVisible(showStatus);
     if (showStatus)
     {
@@ -117,7 +191,7 @@ void RecordingSessionScreen::updateTrainingStatus(
             juce::Label::textColourId,
             trainingFinished
                 ? (trainingSucceeded ? juce::Colours::lightgreen : juce::Colours::orange)
-                : juce::Colours::lightblue);
+                : (running ? juce::Colours::lightblue : juce::Colours::orange));
         trainingStatusLabel.setText(trainingStatusLine, juce::dontSendNotification);
     }
     repaint();
@@ -127,12 +201,27 @@ void RecordingSessionScreen::paint(juce::Graphics& g)
 {
     g.fillAll(getLookAndFeel().findColour(juce::ResizableWindow::backgroundColourId));
 
+    if (calibrationMode)
+    {
+        g.setColour(
+            calibrationFailed ? juce::Colours::orange : juce::Colours::white);
+        g.setFont(juce::FontOptions(27.0f, juce::Font::bold));
+        g.drawFittedText(
+            calibrationInstruction,
+            promptArea,
+            juce::Justification::centred,
+            3);
+        return;
+    }
+
     if (state.sessionFinished)
     {
         g.setColour(juce::Colours::white);
         g.setFont(juce::FontOptions(28.0f, juce::Font::bold));
         g.drawText(
-            L"녹음 완료! 수고하셨습니다.",
+            trainingHeadline.isNotEmpty()
+                ? trainingHeadline
+                : L"녹음 저장 완료",
             promptArea,
             juce::Justification::centred);
         return;
@@ -157,17 +246,10 @@ void RecordingSessionScreen::paint(juce::Graphics& g)
             state.stage == voice_capture::GuidedRecordingStage::song;
         for (int i = 0; i < state.words.size(); ++i)
         {
-            const bool isCurrent = i == state.highlightedWordIndex;
-            const bool isSpoken = i < state.highlightedWordIndex;
-            const auto colour = isCurrent
-                ? juce::Colours::limegreen
-                : isSpoken
-                    ? juce::Colours::lightgreen.withAlpha(0.75f)
-                    : juce::Colours::white.withAlpha(0.45f);
             attributed.append(
                 perSyllable ? state.words[i] : state.words[i] + " ",
-                juce::FontOptions(32.0f, isCurrent ? juce::Font::bold : juce::Font::plain),
-                colour);
+                juce::FontOptions(32.0f, juce::Font::plain),
+                juce::Colours::white);
         }
     }
 

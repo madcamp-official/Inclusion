@@ -68,6 +68,10 @@ public:
     // that was flagged via awaitingFinalize. Advances to the next item or
     // stage and restarts the get-ready countdown.
     void notifyItemFinalized() noexcept;
+    // Keeps the user on the same required item after a hard quality failure.
+    // The raw take remains available for diagnostics, but it is not silently
+    // counted as training data.
+    void notifyItemRejected() noexcept;
 
     [[nodiscard]] GuidedRecordingState getState() const;
     [[nodiscard]] bool isActive() const noexcept;
@@ -131,14 +135,14 @@ private:
     double secondsVoicedTotal = 0.0;
     double songStageElapsedSeconds = 0.0;
     double songSyllableProgress = 0.0;
+    double continuousRecordingSeconds = 0.0;
+    bool captureHasStarted = false;
     bool sessionFinished = false;
     std::vector<Item> customSongItems;
 
     static constexpr double countdownSeconds = 1.4;
-    static constexpr double trailingSilenceHoldSeconds = 0.55;
-    static constexpr double vowelHoldTargetSeconds = 3.0;
     static constexpr double vowelItemMaxSeconds = 9.0;
-    static constexpr double songStageTargetSeconds = 120.0;
+    static constexpr double minimumSessionSeconds = 180.0;
     static constexpr double perWordMaxSecondsFactor = 2.4;
     static constexpr double perWordMaxSecondsBase = 5.0;
     // Sung syllables blend into each other, so per-syllable energy onsets

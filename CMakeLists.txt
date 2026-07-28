@@ -49,6 +49,7 @@ target_sources(VocalGuitarApp PRIVATE
     src/mode1_vocal_follower/PhraseScheduler.cpp
     src/mode1_vocal_follower/SongPackage.cpp
     src/voice_capture/RecordingQualityChecker.cpp
+    src/voice_capture/InputLevelCalibrator.cpp
     src/voice_capture/NoiseReducer.cpp
     src/voice_capture/VoiceRecorder.cpp
     src/voice_capture/VoiceActivityTracker.cpp
@@ -159,6 +160,7 @@ target_sources(VoiceCaptureTests PRIVATE
     tests/voice_capture/VoiceCaptureTests.cpp
     src/voice_capture/NoiseReducer.cpp
     src/voice_capture/RecordingQualityChecker.cpp
+    src/voice_capture/InputLevelCalibrator.cpp
     src/voice_capture/VoiceRecorder.cpp
     src/voice_capture/VoiceActivityTracker.cpp
     src/voice_capture/GuidedRecordingSession.cpp

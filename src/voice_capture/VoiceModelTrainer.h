@@ -21,6 +21,7 @@ public:
         juce::File pythonExecutable;
         juce::File repositoryRoot;
         juce::File profileDirectory;
+        juce::File songPackage;
         juce::String sshHost;
         juce::String experimentName;
     };

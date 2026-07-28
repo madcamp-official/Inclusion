@@ -13,13 +13,18 @@ struct RecordingQuality
     float snrDb = 0.0f;
     float clippingRatio = 0.0f;
     float activeSpeechRatio = 0.0f;
+    double activeSpeechSeconds = 0.0;
     bool passed = false;
+    bool hasWarning = false;
     juce::String summary;
 };
 
 class RecordingQualityChecker
 {
 public:
-    static RecordingQuality analyse(const juce::AudioBuffer<float>& audio, double sampleRate);
+    static RecordingQuality analyse(
+        const juce::AudioBuffer<float>& audio,
+        double sampleRate,
+        float calibratedNoiseFloorDb = -100.0f);
 };
 }

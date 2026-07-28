@@ -112,6 +112,8 @@ void GuidedRecordingSession::start() noexcept
     stage = GuidedRecordingStage::speaking;
     itemIndex = 0;
     songStageElapsedSeconds = 0.0;
+    continuousRecordingSeconds = 0.0;
+    captureHasStarted = false;
     beginItemLocked();
 }
 
@@ -150,10 +152,7 @@ void GuidedRecordingSession::beginItemLocked() noexcept
     // started, advancing to the next lyric line must not stop the recorder
     // or re-run the get-ready countdown, otherwise the singer is cut off
     // mid-phrase at every line boundary.
-    const bool continuingSong =
-        stage == GuidedRecordingStage::song && songStageElapsedSeconds > 0.0;
-
-    if (continuingSong)
+    if (captureHasStarted)
     {
         phase = ItemPhase::listening;
     }
@@ -217,32 +216,6 @@ void GuidedRecordingSession::advanceToNextItemLocked() noexcept
 void GuidedRecordingSession::processSongBlockLocked(double blockSeconds) noexcept
 {
     songStageElapsedSeconds += blockSeconds;
-
-    if (tracker.isVoiced())
-        songSyllableProgress += blockSeconds;
-
-    highlightedWordIndex = juce::jmin(
-        static_cast<int>(songSyllableProgress / songSecondsPerSyllable),
-        currentItemWordCount - 1);
-
-    const bool lineComplete =
-        songSyllableProgress
-            >= currentItemWordCount * songSecondsPerSyllable;
-    if (lineComplete)
-    {
-        // Advance the displayed line without interrupting the take: the
-        // recorder keeps running, so the singer never hears a gap.
-        ++itemIndex;
-        if (itemIndex >= itemCountFor(stage))
-            itemIndex = 0;
-        songSyllableProgress = 0.0;
-        highlightedWordIndex = -1;
-        currentItemWordCount = juce::jmax(
-            1, tokenizePrompt(itemFor(stage, itemIndex).prompt, stage).size());
-    }
-
-    if (songStageElapsedSeconds >= songStageTargetSeconds)
-        phase = ItemPhase::awaitingFinalize;
 }
 
 void GuidedRecordingSession::processAudioBlock(
@@ -267,6 +240,7 @@ void GuidedRecordingSession::processAudioBlock(
         if (countdownRemainingSeconds <= 0.0)
         {
             phase = ItemPhase::listening;
+            captureHasStarted = true;
             tracker.reset();
             highlightedWordIndex = -1;
             itemElapsedSeconds = 0.0;
@@ -277,46 +251,22 @@ void GuidedRecordingSession::processAudioBlock(
 
     tracker.processBlock(input, numSamples);
     itemElapsedSeconds += blockSeconds;
+    continuousRecordingSeconds += blockSeconds;
     if (tracker.isVoiced())
         secondsVoicedTotal += blockSeconds;
 
-    if (stage == GuidedRecordingStage::vowel)
-    {
-        const bool held = secondsVoicedTotal >= vowelHoldTargetSeconds;
-        const bool timedOut = itemElapsedSeconds >= vowelItemMaxSeconds;
-        if (held || timedOut)
-            phase = ItemPhase::awaitingFinalize;
-        return;
-    }
-
     if (stage == GuidedRecordingStage::song)
-    {
         processSongBlockLocked(blockSeconds);
-        return;
-    }
-
-    if (tracker.consumeWordOnset())
-        highlightedWordIndex =
-            juce::jmin(highlightedWordIndex + 1, currentItemWordCount - 1);
-
-    const bool reachedLastWord = highlightedWordIndex >= currentItemWordCount - 1;
-    const bool trailingSilenceHeld =
-        !tracker.isVoiced()
-        && tracker.getSecondsSinceVoiceEnded() >= trailingSilenceHoldSeconds;
-    const bool timedOut = itemElapsedSeconds >= currentItemMaxSeconds;
-
-    if ((reachedLastWord && trailingSilenceHeld) || timedOut)
-        phase = ItemPhase::awaitingFinalize;
 }
 
 void GuidedRecordingSession::requestSkip() noexcept
 {
     const juce::SpinLock::ScopedLockType scopedLock(lock);
-    if (!active)
+    if (!active || phase != ItemPhase::listening)
         return;
 
     if (stage == GuidedRecordingStage::song
-        && songStageElapsedSeconds < songStageTargetSeconds)
+        && continuousRecordingSeconds < minimumSessionSeconds)
     {
         // Mid-song skip means "move to the next lyric line", not "end the
         // whole song stage" — the take keeps rolling.
@@ -330,6 +280,12 @@ void GuidedRecordingSession::requestSkip() noexcept
         return;
     }
 
+    if (stage == GuidedRecordingStage::song)
+    {
+        phase = ItemPhase::awaitingFinalize;
+        return;
+    }
+
     advanceToNextItemLocked();
 }
 
@@ -339,15 +295,11 @@ void GuidedRecordingSession::requestRetry() noexcept
     if (!active)
         return;
 
-    if (stage == GuidedRecordingStage::song)
-    {
-        // Restart the current line's highlight sweep only; the continuous
-        // take is not restarted.
-        songSyllableProgress = 0.0;
-        highlightedWordIndex = -1;
-        return;
-    }
-
+    stage = GuidedRecordingStage::speaking;
+    itemIndex = 0;
+    songStageElapsedSeconds = 0.0;
+    continuousRecordingSeconds = 0.0;
+    captureHasStarted = false;
     beginItemLocked();
 }
 
@@ -357,6 +309,20 @@ void GuidedRecordingSession::notifyItemFinalized() noexcept
     if (!active || phase != ItemPhase::awaitingFinalize)
         return;
     advanceToNextItemLocked();
+}
+
+void GuidedRecordingSession::notifyItemRejected() noexcept
+{
+    const juce::SpinLock::ScopedLockType scopedLock(lock);
+    if (!active || phase != ItemPhase::awaitingFinalize)
+        return;
+
+    stage = GuidedRecordingStage::speaking;
+    itemIndex = 0;
+    songStageElapsedSeconds = 0.0;
+    continuousRecordingSeconds = 0.0;
+    captureHasStarted = false;
+    beginItemLocked();
 }
 
 bool GuidedRecordingSession::isActive() const noexcept
@@ -411,12 +377,12 @@ GuidedRecordingState GuidedRecordingSession::getState() const
     if (stage == GuidedRecordingStage::vowel)
     {
         state.words = juce::StringArray(item.prompt);
-        state.highlightedWordIndex = tracker.isVoiced() ? 0 : -1;
+        state.highlightedWordIndex = -1;
     }
     else
     {
         state.words = tokenizePrompt(item.prompt, stage);
-        state.highlightedWordIndex = highlightedWordIndex;
+        state.highlightedWordIndex = -1;
     }
 
     switch (stage)
@@ -446,9 +412,10 @@ GuidedRecordingState GuidedRecordingSession::getState() const
         case GuidedRecordingStage::song:
             stageOrdinal = 2.0;
             withinStageFraction = juce::jlimit(
-                0.0, 1.0, songStageElapsedSeconds / songStageTargetSeconds);
-            state.stageProgressSeconds = songStageElapsedSeconds;
-            state.stageProgressTargetSeconds = songStageTargetSeconds;
+                0.0, 1.0,
+                continuousRecordingSeconds / minimumSessionSeconds);
+            state.stageProgressSeconds = continuousRecordingSeconds;
+            state.stageProgressTargetSeconds = minimumSessionSeconds;
             break;
         default:
             break;

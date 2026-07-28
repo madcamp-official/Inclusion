@@ -1,4 +1,5 @@
 #include "voice_capture/GuidedRecordingSession.h"
+#include "voice_capture/InputLevelCalibrator.h"
 #include "voice_capture/NoiseReducer.h"
 #include "voice_capture/RecordingQualityChecker.h"
 #include "voice_capture/VoiceActivityTracker.h"
@@ -111,6 +112,68 @@ int main()
     {
         std::cerr << "Expected a clean synthetic recording to pass.\n";
         return 1;
+    }
+
+    {
+        // Regression: real users begin speaking immediately after the
+        // countdown. The first second must not be misclassified as noise.
+        juce::AudioBuffer<float> immediateSpeech(
+            1, static_cast<int>(sampleRate * 8.0));
+        immediateSpeech.clear();
+        auto* immediate = immediateSpeech.getWritePointer(0);
+        for (int i = 0; i < static_cast<int>(sampleRate * 3.0); ++i)
+            immediate[i] = static_cast<float>(
+                0.18 * std::sin(
+                    juce::MathConstants<double>::twoPi * 190.0 * i
+                    / sampleRate));
+        const auto immediateQuality =
+            voice_capture::RecordingQualityChecker::analyse(
+                immediateSpeech, sampleRate);
+        if (!immediateQuality.passed)
+        {
+            std::cerr
+                << "Immediate speech with trailing silence should pass: "
+                << immediateQuality.summary << "\n";
+            return 1;
+        }
+    }
+
+    {
+        voice_capture::InputLevelCalibrator calibrator;
+        calibrator.prepare(sampleRate);
+        calibrator.start();
+
+        std::vector<float> calibrationAudio;
+        juce::Random calibrationRandom(2026);
+        appendSilence(
+            calibrationAudio, sampleRate, 1.5, calibrationRandom, 0.002f);
+        appendTone(
+            calibrationAudio,
+            sampleRate,
+            3.0,
+            0.7f,
+            220.0,
+            calibrationRandom);
+        for (int start = 0;
+             start < static_cast<int>(calibrationAudio.size());
+             start += 480)
+        {
+            calibrator.processBlock(
+                calibrationAudio.data() + start,
+                std::min(
+                    480,
+                    static_cast<int>(calibrationAudio.size()) - start));
+        }
+
+        const auto calibration = calibrator.getResult();
+        if (calibration.phase
+                != voice_capture::InputLevelCalibrator::Phase::complete
+            || calibration.recommendedGain >= 0.9f)
+        {
+            std::cerr
+                << "Expected a loud calibration voice to produce attenuation.\n";
+            return 1;
+        }
     }
 
     const float roomToneBefore = rms(audio, 0, static_cast<int>(sampleRate));
@@ -246,58 +309,22 @@ int main()
             return 1;
         }
 
-        const int wordCount = state.words.size();
-        if (wordCount < 2)
-        {
-            std::cerr << "Expected the first speaking prompt to contain multiple words.\n";
-            return 1;
-        }
-
         juce::Random speechRandom(999);
-        for (int word = 0; word < wordCount; ++word)
+        std::vector<float> spokenAudio;
+        appendTone(spokenAudio, sampleRate, 2.0, 0.18f, 180.0, speechRandom);
+        feedSessionInChunks(session, spokenAudio, 480);
+        state = session.getState();
+        if (state.highlightedWordIndex != -1 || state.awaitingFinalize)
         {
-            std::vector<float> wordSamples;
-            appendTone(
-                wordSamples, sampleRate, 0.22, 0.18f, 180.0 + word * 15.0, speechRandom);
-            appendSilence(wordSamples, sampleRate, 0.25, speechRandom, 0.0f);
-            feedSessionInChunks(session, wordSamples, 480);
-
-            state = session.getState();
-            if (state.highlightedWordIndex != word)
-            {
-                std::cerr << "Expected highlighted word index " << word
-                          << " after word " << word << ", got "
-                          << state.highlightedWordIndex << ".\n";
-                return 1;
-            }
-        }
-
-        if (state.awaitingFinalize)
-        {
-            std::cerr << "Item should not finalize before the trailing silence hold elapses.\n";
+            std::cerr << "Manual recording must not colour or auto-finalize a prompt.\n";
             return 1;
         }
 
-        {
-            std::vector<float> trailingSilence(
-                static_cast<size_t>(sampleRate * 0.7), 0.0f);
-            session.processAudioBlock(
-                trailingSilence.data(), static_cast<int>(trailingSilence.size()));
-        }
+        session.requestSkip();
         state = session.getState();
-        if (!state.awaitingFinalize)
+        if (state.itemIndexInStage != 1 || !session.shouldBeCapturing())
         {
-            std::cerr << "Expected the item to be awaiting finalize after trailing silence.\n";
-            return 1;
-        }
-
-        session.notifyItemFinalized();
-        state = session.getState();
-        if (state.stage != voice_capture::GuidedRecordingStage::speaking
-            || state.itemIndexInStage != 1
-            || !state.countdownActive)
-        {
-            std::cerr << "Expected the session to move to the next speaking item.\n";
+            std::cerr << "Manual next must keep the continuous take running.\n";
             return 1;
         }
 
@@ -331,15 +358,9 @@ int main()
         }
 
         // Clear the get-ready countdown, then confirm the take is rolling.
-        {
-            std::vector<float> countdownSilence(
-                static_cast<size_t>(sampleRate * 1.6), 0.0f);
-            session.processAudioBlock(
-                countdownSilence.data(), static_cast<int>(countdownSilence.size()));
-        }
         if (!session.shouldBeCapturing())
         {
-            std::cerr << "Expected the song stage to be capturing after the countdown.\n";
+            std::cerr << "Expected capture to continue into the song stage.\n";
             return 1;
         }
 
@@ -348,35 +369,36 @@ int main()
         // chop the singer off at every line boundary.
         juce::Random singRandom(4242);
         const int lineAtStart = session.getState().itemIndexInStage;
-        bool sawLineAdvance = false;
-        for (int chunk = 0; chunk < 140; ++chunk)
+        session.requestSkip();
+        if (session.getState().itemIndexInStage == lineAtStart
+            || !session.shouldBeCapturing())
+        {
+            std::cerr << "Manual lyric advance interrupted the continuous take.\n";
+            return 1;
+        }
+
+        for (int chunk = 0; chunk < 176; ++chunk)
         {
             std::vector<float> sungAudio;
             appendTone(sungAudio, sampleRate, 1.0, 0.2f, 210.0, singRandom);
             feedSessionInChunks(session, sungAudio, 480);
-
-            if (!session.getState().awaitingFinalize && !session.shouldBeCapturing())
-            {
-                std::cerr << "Song-stage capture stopped mid-take at chunk "
-                          << chunk << ".\n";
-                return 1;
-            }
-            if (session.getState().itemIndexInStage != lineAtStart)
-                sawLineAdvance = true;
-            if (session.getState().awaitingFinalize)
-                break;
         }
 
-        if (!sawLineAdvance)
+        session.requestSkip();
+        if (session.getState().awaitingFinalize)
         {
-            std::cerr << "Expected lyric lines to advance during the song take.\n";
+            std::cerr << "The complete action must stay locked before 180 seconds.\n";
             return 1;
         }
 
+        std::vector<float> finalAudio;
+        appendTone(finalAudio, sampleRate, 3.0, 0.2f, 210.0, singRandom);
+        feedSessionInChunks(session, finalAudio, 480);
+        session.requestSkip();
         state = session.getState();
         if (!state.awaitingFinalize)
         {
-            std::cerr << "Expected the song stage to finish once past the 120s floor.\n";
+            std::cerr << "Expected explicit completion after the 180-second floor.\n";
             return 1;
         }
 

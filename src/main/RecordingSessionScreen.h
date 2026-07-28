@@ -22,6 +22,11 @@ public:
         float inputLevelValue01,
         const juce::String& statusMessage,
         bool statusIsError);
+    void updateCalibrationState(
+        const juce::String& instruction,
+        double progress,
+        float inputLevelValue01,
+        bool failed);
 
     // Only meaningful once the session has finished. availableToStart is
     // true before the user has requested training; once requested, running
@@ -57,6 +62,10 @@ private:
     juce::TextButton startTrainingButton { L"목소리 재학습 시작" };
     juce::Label trainingStatusLabel;
     juce::Rectangle<int> promptArea;
+    bool calibrationMode = false;
+    juce::String calibrationInstruction;
+    bool calibrationFailed = false;
+    juce::String trainingHeadline;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(RecordingSessionScreen)
 };

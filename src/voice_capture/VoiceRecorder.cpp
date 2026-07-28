@@ -34,8 +34,18 @@ void VoiceRecorder::stop()
     recording.store(false);
 }
 
+void VoiceRecorder::setInputGain(float newGain, float noiseFloorDb) noexcept
+{
+    const auto gain = juce::jlimit(0.1f, 1.0f, newGain);
+    inputGain.store(gain);
+    calibratedNoiseFloorDb.store(
+        noiseFloorDb + juce::Decibels::gainToDecibels(gain, -100.0f));
+}
+
 void VoiceRecorder::processBlock(const juce::AudioBuffer<float>& input,
-                                 int inputChannel)
+                                 int inputChannel,
+                                 int startSample,
+                                 int requestedSamples)
 {
     if (!recording.load() || input.getNumChannels() == 0)
         return;
@@ -45,12 +55,23 @@ void VoiceRecorder::processBlock(const juce::AudioBuffer<float>& input,
         return;
 
     const int channel = juce::jlimit(0, input.getNumChannels() - 1, inputChannel);
+    startSample = juce::jlimit(0, input.getNumSamples(), startSample);
+    const auto available = input.getNumSamples() - startSample;
+    const auto inputSamples = requestedSamples < 0
+        ? available
+        : juce::jmin(available, requestedSamples);
     const auto remaining = recordedAudio.getNumSamples() - writePosition;
-    const auto samplesToCopy = juce::jmin(remaining, input.getNumSamples());
+    const auto samplesToCopy = juce::jmin(remaining, inputSamples);
     if (samplesToCopy > 0)
     {
-        recordedAudio.copyFrom(0, writePosition, input, channel, 0, samplesToCopy);
-        const float blockPeak = input.getMagnitude(channel, 0, samplesToCopy);
+        const auto gain = inputGain.load();
+        auto* destination = recordedAudio.getWritePointer(0, writePosition);
+        const auto* source = input.getReadPointer(channel, startSample);
+        for (int sample = 0; sample < samplesToCopy; ++sample)
+            destination[sample] = juce::jlimit(
+                -1.0f, 1.0f, source[sample] * gain);
+        const float blockPeak =
+            input.getMagnitude(channel, startSample, samplesToCopy) * gain;
         inputPeak.store(juce::jmax(blockPeak, inputPeak.load() * 0.82f));
         writePosition += samplesToCopy;
     }
@@ -70,7 +91,8 @@ RecordingQuality VoiceRecorder::getQuality() const
     const juce::SpinLock::ScopedLockType scopedLock(lock);
     juce::AudioBuffer<float> snapshot(1, writePosition);
     snapshot.copyFrom(0, 0, recordedAudio, 0, 0, writePosition);
-    return RecordingQualityChecker::analyse(snapshot, sampleRate);
+    return RecordingQualityChecker::analyse(
+        snapshot, sampleRate, calibratedNoiseFloorDb.load());
 }
 
 juce::Result VoiceRecorder::saveAsWav(const juce::File& destination,

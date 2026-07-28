@@ -262,6 +262,11 @@ MainComponent::MainComponent()
 
     recordingSessionScreen.onRetryRequested = [this]
     {
+        if (recordingPreflightActive)
+        {
+            inputLevelCalibrator.start();
+            return;
+        }
         guidedRecordingSession.requestRetry();
     };
     recordingSessionScreen.onSkipRequested = [this]
@@ -298,6 +303,7 @@ void MainComponent::prepareToPlay(int samplesPerBlockExpected, double sampleRate
         0.0f);
     mode1Controller.prepare(sampleRate, samplesPerBlockExpected);
     voiceRecorder.prepare(sampleRate);
+    inputLevelCalibrator.prepare(sampleRate);
     guidedRecordingSession.prepare(sampleRate);
 }
 
@@ -310,6 +316,29 @@ void MainComponent::getNextAudioBlock(
     auto& buffer = *bufferToFill.buffer;
     const int numSamples = bufferToFill.numSamples;
     const int startSample = bufferToFill.startSample;
+
+    if ((recordingPreflightActive.load() || guidedRecordingSession.isActive())
+        && buffer.getNumChannels() > 0)
+    {
+        const int micChannel = juce::jlimit(
+            0,
+            buffer.getNumChannels() - 1,
+            microphoneChannelIndex.load());
+        const auto peak =
+            buffer.getMagnitude(micChannel, startSample, numSamples);
+        liveMicrophonePeak.store(
+            juce::jmax(peak, liveMicrophonePeak.load() * 0.82f));
+    }
+
+    if (recordingPreflightActive && buffer.getNumChannels() > 0)
+    {
+        const int micChannel = juce::jlimit(
+            0,
+            buffer.getNumChannels() - 1,
+            microphoneChannelIndex.load());
+        inputLevelCalibrator.processBlock(
+            buffer.getReadPointer(micChannel, startSample), numSamples);
+    }
 
     if (guidedRecordingSession.isActive() && buffer.getNumChannels() > 0)
     {
@@ -328,7 +357,8 @@ void MainComponent::getNextAudioBlock(
     }
 
     if (voiceRecorder.isRecording())
-        voiceRecorder.processBlock(buffer, microphoneChannelIndex.load());
+        voiceRecorder.processBlock(
+            buffer, microphoneChannelIndex.load(), startSample, numSamples);
 
     if (static_cast<int>(guitarInputScratch.size()) < numSamples)
     {
@@ -457,9 +487,16 @@ void MainComponent::selectMode1()
 
     activeMode = ActiveMode::mode1;
     keyShiftSlider.setRange(
-        -6.0,
+        static_cast<double>(mode1Controller.getMinimumManualKeyShift()),
         static_cast<double>(mode1Controller.getMaximumManualKeyShift()),
         1.0);
+    expressionSlider.setEnabled(
+        mode1Controller.hasMultipleExpressionStrengths());
+    expressionLabel.setText(
+        mode1Controller.hasMultipleExpressionStrengths()
+            ? L"내 스타일  ←  원곡 표현"
+            : L"표현 강도 25% · 사용자 맞춤으로 고정",
+        juce::dontSendNotification);
     expressionSlider.setValue(
         mode1Controller.getDefaultExpressionStrength(),
         juce::sendNotificationSync);
@@ -513,9 +550,16 @@ bool MainComponent::loadSongPackage(const juce::File& file)
 
     activeMode = ActiveMode::mode1;
     keyShiftSlider.setRange(
-        -6.0,
+        static_cast<double>(mode1Controller.getMinimumManualKeyShift()),
         static_cast<double>(mode1Controller.getMaximumManualKeyShift()),
         1.0);
+    expressionSlider.setEnabled(
+        mode1Controller.hasMultipleExpressionStrengths());
+    expressionLabel.setText(
+        mode1Controller.hasMultipleExpressionStrengths()
+            ? L"내 스타일  ←  원곡 표현"
+            : L"표현 강도 25% · 사용자 맞춤으로 고정",
+        juce::dontSendNotification);
     expressionSlider.setValue(
         mode1Controller.getDefaultExpressionStrength(),
         juce::sendNotificationSync);
@@ -588,10 +632,18 @@ juce::File MainComponent::findRepositoryRoot() const
 
 void MainComponent::startVoiceModelTraining()
 {
-    if (trainingRequestedForSession || voiceModelTrainer.isBusy())
+    if (voiceModelTrainer.isBusy())
         return;
     if (profileDirectory == juce::File() || !profileDirectory.isDirectory())
         return;
+    if (acceptedClipCount == 0 || acceptedDurationSeconds < 180.0)
+    {
+        guidedStatusIsError = true;
+        guidedStatusMessage =
+            L"재학습하려면 통과한 음성이 최소 180초 필요합니다. 현재 "
+            + juce::String(acceptedDurationSeconds, 0) + L"초입니다.";
+        return;
+    }
 
     trainingRequestedForSession = true;
 
@@ -603,6 +655,7 @@ void MainComponent::startVoiceModelTraining()
     config.pythonExecutable = pythonExecutable;
     config.repositoryRoot = repositoryRoot;
     config.profileDirectory = profileDirectory;
+    config.songPackage = findDevelopmentSongPackage();
     config.sshHost = "root@172.10.5.154";
     config.experimentName = "rvc_user_" + profileDirectory.getFileName();
     voiceModelTrainer.start(std::move(config));
@@ -681,8 +734,18 @@ juce::StringArray MainComponent::loadSongLyricLines() const
 
 void MainComponent::startGuidedRecordingSession()
 {
-    if (guidedRecordingSession.isActive())
+    if (guidedRecordingSession.isActive()
+        || recordingPreflightActive
+        || voiceModelTrainer.isBusy())
         return;
+
+    trainingRequestedForSession = false;
+    profileDirectory = {};
+    manifestClips.clear();
+    clipIndex = 0;
+    acceptedClipCount = 0;
+    acceptedDurationSeconds = 0.0;
+    profileProgressValue = 0.0;
 
     mode1Controller.reset();
     automaticPlaybackButton.setToggleState(
@@ -695,7 +758,8 @@ void MainComponent::startGuidedRecordingSession()
     guidedStatusMessage = {};
     guidedStatusIsError = false;
     guidedRecordingSession.setSongLines(loadSongLyricLines());
-    guidedRecordingSession.start();
+    recordingPreflightActive = true;
+    inputLevelCalibrator.start();
 
     mode1Button.setEnabled(false);
     mode2Button.setEnabled(false);
@@ -711,6 +775,8 @@ void MainComponent::cancelGuidedRecordingSession()
     if (voiceRecorder.isRecording())
         voiceRecorder.stop();
     guidedRecordingSession.stop();
+    recordingPreflightActive = false;
+    inputLevelCalibrator.cancel();
 
     recordingSessionScreen.setVisible(false);
     mode1Button.setEnabled(true);
@@ -730,7 +796,18 @@ void MainComponent::finalizeGuidedItem(const voice_capture::GuidedRecordingState
 {
     voiceRecorder.stop();
 
-    const auto quality = voiceRecorder.getQuality();
+    auto quality = voiceRecorder.getQuality();
+    const bool usableContinuousTake =
+        quality.durationSeconds >= 180.0
+        && quality.activeSpeechSeconds >= 30.0
+        && quality.clippingRatio <= 0.05f;
+    if (!quality.passed && usableContinuousTake)
+    {
+        quality.passed = true;
+        quality.hasWarning = true;
+        quality.summary =
+            L"연속 녹음은 저장했습니다 · 최종 품질 수치는 참고용입니다";
+    }
     const auto details =
         juce::String(quality.durationSeconds, 1) + L"초 · 평균 "
         + juce::String(quality.rmsDb, 1) + L" dBFS · SNR "
@@ -762,7 +839,7 @@ void MainComponent::finalizeGuidedItem(const voice_capture::GuidedRecordingState
         guidedStatusMessage =
             L"품질 검사를 통과하지 못해 원본만 보관했습니다 · " + details
                 + L" · " + quality.summary;
-        guidedRecordingSession.notifyItemFinalized();
+        guidedRecordingSession.notifyItemRejected();
         return;
     }
 
@@ -845,6 +922,8 @@ void MainComponent::writeManifestEntry(
         "created_at",
         juce::Time::getCurrentTime().toISO8601(true));
     root->setProperty("input_sample_rate", currentSampleRate);
+    root->setProperty("calibrated_room_tone_dbfs", calibratedRoomToneDb);
+    root->setProperty("recording_input_gain", calibratedInputGain);
     root->setProperty("storage_format", "WAV PCM, mono, 48000 Hz, 24-bit");
     root->setProperty("clips", juce::var(manifestClips));
     profileDirectory.getChildFile("manifest.json").replaceWithText(
@@ -858,6 +937,39 @@ void MainComponent::timerCallback()
 {
     if (recordingSessionScreen.isVisible())
     {
+        if (recordingPreflightActive)
+        {
+            const auto calibration = inputLevelCalibrator.getResult();
+            const auto peakDb = juce::Decibels::gainToDecibels(
+                inputLevelCalibrator.getInputPeak(), -60.0f);
+            const float level01 =
+                juce::jlimit(0.0f, 1.0f, (peakDb + 60.0f) / 60.0f);
+
+            if (calibration.phase
+                == voice_capture::InputLevelCalibrator::Phase::complete)
+            {
+                calibratedRoomToneDb = calibration.roomToneDb;
+                calibratedInputGain = calibration.recommendedGain;
+                voiceRecorder.setInputGain(
+                    calibratedInputGain, calibratedRoomToneDb);
+                recordingPreflightActive = false;
+                guidedStatusIsError = false;
+                guidedStatusMessage = calibration.message;
+                guidedRecordingSession.start();
+            }
+            else
+            {
+                const bool failed = calibration.phase
+                    == voice_capture::InputLevelCalibrator::Phase::failed;
+                recordingSessionScreen.updateCalibrationState(
+                    calibration.message,
+                    calibration.progress,
+                    level01,
+                    failed);
+                return;
+            }
+        }
+
         auto state = guidedRecordingSession.getState();
 
         if (state.awaitingFinalize)
@@ -867,7 +979,7 @@ void MainComponent::timerCallback()
         }
 
         const auto peakDb = juce::Decibels::gainToDecibels(
-            voiceRecorder.getInputPeak(),
+            liveMicrophonePeak.load() * voiceRecorder.getInputGain(),
             -60.0f);
         const float level01 = juce::jlimit(
             0.0f, 1.0f, (peakDb + 60.0f) / 60.0f);
@@ -877,20 +989,48 @@ void MainComponent::timerCallback()
 
         if (state.sessionFinished)
         {
+            if (!trainingRequestedForSession
+                && acceptedClipCount > 0
+                && acceptedDurationSeconds >= 180.0)
+            {
+                guidedStatusMessage =
+                    L"녹음 파일 저장 완료 · 재학습을 자동으로 시작합니다.";
+                guidedStatusIsError = false;
+                startVoiceModelTraining();
+            }
+
+            const bool trainingFinished =
+                trainingRequestedForSession && voiceModelTrainer.isFinished();
+            const bool trainingSucceeded =
+                trainingFinished && voiceModelTrainer.didSucceed();
             recordingStatusLabel.setColour(
                 juce::Label::textColourId,
-                juce::Colours::lightgreen);
+                trainingFinished && !trainingSucceeded
+                    ? juce::Colours::orange
+                    : juce::Colours::lightgreen);
             recordingStatusLabel.setText(
-                L"[완료] 가이드 녹음을 모두 마쳤습니다 · 통과 클립 "
-                    + juce::String(acceptedClipCount) + L"개",
+                trainingSucceeded
+                    ? L"[완료] 새 목소리 학습 및 노래 적용 완료"
+                    : trainingFinished
+                        ? L"[실패] 재학습 또는 노래 변환 실패"
+                        : trainingRequestedForSession
+                            ? L"[진행 중] 모델 재학습 및 노래 변환 중"
+                            : L"[대기] 녹음 저장 완료",
                 juce::dontSendNotification);
 
             recordingSessionScreen.updateTrainingStatus(
-                !trainingRequestedForSession,
+                trainingFinished && !voiceModelTrainer.didSucceed(),
                 voiceModelTrainer.isBusy(),
-                voiceModelTrainer.isFinished() && trainingRequestedForSession,
-                voiceModelTrainer.didSucceed(),
-                voiceModelTrainer.getLatestStatusLine());
+                trainingFinished,
+                trainingSucceeded,
+                !trainingRequestedForSession
+                        && acceptedDurationSeconds < 180.0
+                    ? L"재학습까지 "
+                        + juce::String(
+                            juce::jmax(0.0, 180.0 - acceptedDurationSeconds),
+                            0)
+                        + L"초의 통과 음성이 더 필요합니다."
+                    : voiceModelTrainer.getLatestStatusLine());
         }
         return;
     }

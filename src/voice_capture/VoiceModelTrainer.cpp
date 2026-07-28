@@ -20,6 +20,7 @@ void VoiceModelTrainer::start(Config newConfig)
     finished.store(false);
     succeeded.store(false);
     cancelRequested.store(false);
+    newConfig.profileDirectory.getChildFile("training.log").deleteFile();
     setStatus(L"준비 중...");
     startThread();
 }
@@ -63,6 +64,7 @@ bool VoiceModelTrainer::runStep(
     }
 
     juce::String buffer;
+    juce::String lastOutputLine;
     char chunk[512];
     while (process.isRunning() && !cancelRequested.load())
     {
@@ -76,7 +78,12 @@ bool VoiceModelTrainer::runStep(
                 const auto line = buffer.substring(0, newlineIndex).trim();
                 buffer = buffer.substring(newlineIndex + 1);
                 if (line.isNotEmpty())
+                {
+                    lastOutputLine = line;
+                    config.profileDirectory.getChildFile("training.log").appendText(
+                        label + ": " + line + "\n");
                     setStatus(label + L": " + line);
+                }
             }
         }
         else
@@ -94,12 +101,31 @@ bool VoiceModelTrainer::runStep(
     }
 
     process.waitForProcessToFinish(5000);
+    while (true)
+    {
+        const int bytesRead =
+            process.readProcessOutput(chunk, sizeof(chunk) - 1);
+        if (bytesRead <= 0)
+            break;
+        buffer += juce::String::fromUTF8(chunk, bytesRead);
+    }
+    const auto trailingLine = buffer.trim();
+    if (trailingLine.isNotEmpty())
+    {
+        lastOutputLine = trailingLine;
+        config.profileDirectory.getChildFile("training.log").appendText(
+            label + ": " + trailingLine + "\n");
+    }
     const auto exitCode = process.getExitCode();
     activeProcess = nullptr;
 
     if (exitCode != 0)
     {
-        setStatus(label + L" 실패 (종료 코드 " + juce::String(exitCode) + ")");
+        setStatus(
+            label + L" 실패 (종료 코드 " + juce::String(exitCode) + L")"
+                + (lastOutputLine.isNotEmpty()
+                    ? L" · " + lastOutputLine
+                    : L" · 자세한 출력이 없습니다."));
         return false;
     }
 
@@ -117,8 +143,30 @@ void VoiceModelTrainer::run()
         "tools/mode1_song_package/prepare_voice_training_dataset.py");
     const auto trainScript = config.repositoryRoot.getChildFile(
         "tools/mode1_song_package/train_rvc_voice.py");
+    const auto refreshScript = config.repositoryRoot.getChildFile(
+        "tools/mode1_song_package/refresh_song_package_after_training.py");
     const auto combinedWav =
         config.profileDirectory.getChildFile("training_combined.wav");
+
+    if (!prepareScript.existsAsFile()
+        || !trainScript.existsAsFile()
+        || !refreshScript.existsAsFile())
+    {
+        setStatus(L"재학습 도구를 찾지 못했습니다. 저장소 위치를 확인해 주세요.");
+        finished.store(true);
+        return;
+    }
+
+    const auto acceptedFiles =
+        config.profileDirectory.getChildFile("accepted").findChildFiles(
+            juce::File::findFiles, false, "*.wav");
+    if (acceptedFiles.isEmpty())
+    {
+        setStatus(
+            L"재학습할 통과 클립이 없습니다. 품질검사를 통과한 녹음이 필요합니다.");
+        finished.store(true);
+        return;
+    }
 
     const juce::StringArray prepareArgs {
         pythonExe,
@@ -127,6 +175,8 @@ void VoiceModelTrainer::run()
         config.profileDirectory.getFullPathName(),
         "--output",
         combinedWav.getFullPathName(),
+        "--minimum-duration-seconds",
+        "180",
     };
 
     if (!runStep(L"데이터 준비", prepareArgs))
@@ -146,7 +196,37 @@ void VoiceModelTrainer::run()
         config.experimentName,
     };
 
-    succeeded.store(runStep(L"GPU 재학습", trainArgs));
+    if (!runStep(L"GPU 재학습", trainArgs))
+    {
+        finished.store(true);
+        return;
+    }
+
+    if (!config.songPackage.existsAsFile())
+    {
+        setStatus(
+            L"재학습은 완료됐지만 자동 변환할 song_package.json을 찾지 못했습니다.");
+        finished.store(true);
+        return;
+    }
+
+    const auto refreshResult =
+        config.profileDirectory.getChildFile("song_refresh_result.json");
+    const juce::StringArray refreshArgs {
+        pythonExe,
+        refreshScript.getFullPathName(),
+        "--host",
+        config.sshHost,
+        "--experiment-name",
+        config.experimentName,
+        "--song-package",
+        config.songPackage.getFullPathName(),
+        "--user-voice",
+        combinedWav.getFullPathName(),
+        "--result-json",
+        refreshResult.getFullPathName(),
+    };
+    succeeded.store(runStep(L"새 목소리로 곡 자동 변환", refreshArgs));
     finished.store(true);
 }
 

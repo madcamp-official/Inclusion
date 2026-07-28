@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from math import gcd
 from pathlib import Path
 
 import librosa
@@ -11,7 +12,7 @@ import numpy as np
 import pyworld
 import soundfile as sf
 from scipy.ndimage import median_filter
-from scipy.signal import butter, sosfiltfilt, welch
+from scipy.signal import butter, resample_poly, sosfiltfilt, welch
 
 
 FRAME_PERIOD_MS = 5.0
@@ -23,14 +24,43 @@ def read_mono(path: Path) -> tuple[np.ndarray, int]:
 
 
 def world_analysis(audio: np.ndarray, sr: int):
+    f0, times = world_pitch_analysis(audio, sr)
+    spectrum = pyworld.cheaptrick(audio, f0, times, sr)
+    aperiodicity = pyworld.d4c(audio, f0, times, sr)
+    return f0, times, spectrum, aperiodicity
+
+
+def world_pitch_analysis(audio: np.ndarray, sr: int):
     f0, times = pyworld.harvest(
         audio, sr, f0_floor=55.0, f0_ceil=1100.0,
         frame_period=FRAME_PERIOD_MS,
     )
     f0 = pyworld.stonemask(audio, f0, times, sr)
-    spectrum = pyworld.cheaptrick(audio, f0, times, sr)
-    aperiodicity = pyworld.d4c(audio, f0, times, sr)
-    return f0, times, spectrum, aperiodicity
+    return f0, times
+
+
+def world_pitch_analysis_fast(audio: np.ndarray, sr: int):
+    f0, times = pyworld.dio(
+        audio,
+        sr,
+        f0_floor=55.0,
+        f0_ceil=1100.0,
+        frame_period=10.0,
+        speed=4,
+        allowed_range=0.2,
+    )
+    f0 = pyworld.stonemask(audio, f0, times, sr)
+    return f0, times
+
+
+def downsample_for_pitch(
+    audio: np.ndarray, sr: int, target_sr: int = 16000
+) -> tuple[np.ndarray, int]:
+    if sr <= target_sr:
+        return audio, sr
+    divisor = gcd(sr, target_sr)
+    reduced = resample_poly(audio, target_sr // divisor, sr // divisor)
+    return np.ascontiguousarray(reduced, dtype=np.float64), target_sr
 
 
 def robust_pitch_stats(f0: np.ndarray) -> dict:
@@ -97,11 +127,13 @@ def energy_stats(audio: np.ndarray, sr: int) -> dict:
     }
 
 
-def select_key_shift(user: dict, source: dict) -> tuple[int, list[dict]]:
+def select_key_shift(
+    user: dict,
+    source: dict,
+    shifts: range | tuple[int, ...] = range(-18, 13),
+) -> tuple[int, list[dict]]:
     candidates = []
-    # Female-to-low-male arrangements can require more than one octave.
-    # The package transposes the guitar chord reference by the same amount.
-    for shift in range(-18, 13):
+    for shift in shifts:
         low = source["midi_safe_low"] + shift
         high = source["midi_safe_high"] + shift
         below = max(0.0, user["midi_safe_low"] - low)
@@ -188,6 +220,14 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--key-shift", type=int)
     parser.add_argument(
+        "--direct-rvc",
+        action="store_true",
+        help=(
+            "Analyse pitch at 16 kHz and let RVC apply the selected key directly. "
+            "Skips WORLD spectrum decomposition, resynthesis, and expression variants."
+        ),
+    )
+    parser.add_argument(
         "--style-strengths",
         default="25",
         help="Comma-separated source-expression strengths, e.g. 0,25,50,75,100",
@@ -198,14 +238,44 @@ def main() -> None:
 
     user_audio, user_sr = read_mono(args.user_voice)
     source_audio, source_sr = read_mono(args.source_vocal)
-    user_f0, _, _, _ = world_analysis(user_audio, user_sr)
-    source_f0, _, source_sp, source_ap = world_analysis(source_audio, source_sr)
+    # The user recording is only used to choose the best range and expression
+    # profile. Avoid the expensive spectral/aperiodicity decomposition that is
+    # only needed to resynthesise the source vocal.
+    user_pitch_audio, user_pitch_sr = (
+        downsample_for_pitch(user_audio, user_sr)
+        if args.direct_rvc
+        else (user_audio, user_sr)
+    )
+    pitch_analyser = (
+        world_pitch_analysis_fast
+        if args.direct_rvc
+        else world_pitch_analysis
+    )
+    user_f0, _ = pitch_analyser(user_pitch_audio, user_pitch_sr)
+    if args.direct_rvc:
+        source_pitch_audio, source_pitch_sr = downsample_for_pitch(
+            source_audio, source_sr
+        )
+        source_f0, _ = pitch_analyser(
+            source_pitch_audio, source_pitch_sr
+        )
+        source_sp = source_ap = None
+    else:
+        source_f0, _, source_sp, source_ap = world_analysis(
+            source_audio, source_sr
+        )
     user_pitch = robust_pitch_stats(user_f0)
     source_pitch = robust_pitch_stats(source_f0)
     user_vibrato = vibrato_stats(user_f0)
     user_energy = energy_stats(user_audio, user_sr)
     source_energy = energy_stats(source_audio, source_sr)
-    recommended_shift, candidates = select_key_shift(user_pitch, source_pitch)
+    # Direct mode chooses one of the song's musically vetted anchors. Recorded
+    # speech is lower and narrower than a person's singing range, so allowing an
+    # unconstrained search can otherwise produce an unusable -18 semitone result.
+    candidate_shifts = (-12, -6, 0) if args.direct_rvc else range(-18, 13)
+    recommended_shift, candidates = select_key_shift(
+        user_pitch, source_pitch, candidate_shifts
+    )
     key_shift = args.key_shift if args.key_shift is not None else recommended_shift
 
     source_rms = rms_curve(source_audio, source_sr, len(source_f0))
@@ -245,6 +315,56 @@ def main() -> None:
         for item in args.style_strengths.split(",")
         if item.strip()
     })
+    if args.direct_rvc:
+        strength = 25
+        plan_path = output_dir / f"style_plan_{strength:03d}.json"
+        plan = {
+            "schema_version": 2,
+            "style_strength": strength,
+            "source_vocal": str(args.source_vocal.resolve()),
+            "prepared_rvc_input": str(args.source_vocal.resolve()),
+            "source_pitch": source_pitch,
+            "base_key_shift": key_shift,
+            "recommended_base_key_shift": recommended_shift,
+            "candidate_shifts": candidates,
+            "pitch_processing": {
+                "mode": "direct_rvc_single_best_key",
+                "rvc_pitch_shift": key_shift,
+            },
+            "energy_processing": {"mode": "disabled"},
+            "range_warnings": warnings,
+        }
+        plan_text = json.dumps(plan, ensure_ascii=False, indent=2) + "\n"
+        plan_path.write_text(plan_text, encoding="utf-8")
+        (output_dir / "style_plan.json").write_text(
+            plan_text, encoding="utf-8"
+        )
+        variants = [{
+            "strength": strength,
+            "prepared_rvc_input": str(args.source_vocal.resolve()),
+            "style_plan": str(plan_path),
+            "rvc_pitch_shift": key_shift,
+        }]
+        manifest_path = output_dir / "style_variants.json"
+        manifest_path.write_text(
+            json.dumps({
+                "schema_version": 1,
+                "default_strength": strength,
+                "base_key_shift": key_shift,
+                "render_mode": "direct_rvc_single_best_key",
+                "variants": variants,
+            }, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        print(json.dumps({
+            "voice_profile": str(output_dir / "voice_profile.json"),
+            "manifest": str(manifest_path),
+            "variants": variants,
+            "base_key_shift": key_shift,
+            "warnings": warnings,
+        }, ensure_ascii=False, indent=2))
+        return
+
     variants = []
     for strength in strengths:
         parameters = style_parameters(strength)

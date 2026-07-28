@@ -3,6 +3,7 @@
 #include <juce_audio_basics/juce_audio_basics.h>
 #include <juce_core/juce_core.h>
 
+#include <algorithm>
 #include <vector>
 
 namespace mode1
@@ -68,6 +69,16 @@ public:
         return keyAnchors;
     }
     [[nodiscard]] int getNearestKeyAnchor(int targetKeyShift) const noexcept;
+    [[nodiscard]] int getMinimumManualKeyShift() const noexcept
+    {
+        return hasManualKeyShiftRange ? manualKeyShiftMinimum : -6;
+    }
+    [[nodiscard]] int getMaximumManualKeyShift() const noexcept
+    {
+        return hasManualKeyShiftRange
+            ? manualKeyShiftMaximum
+            : std::max(6, -baseKeyShift);
+    }
 
 private:
     juce::File sourceFile;
@@ -78,6 +89,9 @@ private:
     int defaultExpressionStrength = 25;
     std::vector<int> expressionStrengths { 25 };
     std::vector<int> keyAnchors { 0 };
+    bool hasManualKeyShiftRange = false;
+    int manualKeyShiftMinimum = -6;
+    int manualKeyShiftMaximum = 6;
     std::vector<Phrase> phrases;
 };
 

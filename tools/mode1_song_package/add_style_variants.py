@@ -15,6 +15,11 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--package", type=Path, required=True)
     parser.add_argument("--manifest", type=Path, required=True)
+    parser.add_argument(
+        "--directory-tag",
+        default="",
+        help="Add a model/version tag to generated vocal directories.",
+    )
     args = parser.parse_args()
 
     package_path = args.package.resolve()
@@ -22,6 +27,13 @@ def main() -> None:
     package = json.loads(package_path.read_text(encoding="utf-8"))
     manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
     default_strength = int(manifest.get("default_strength", 25))
+    safe_tag = "".join(
+        character
+        if character.isalnum() or character in ("-", "_")
+        else "_"
+        for character in args.directory_tag
+    ).strip("_")
+    tag_suffix = f"_{safe_tag}" if safe_tag else ""
     variants = []
 
     for variant in manifest["variants"]:
@@ -37,7 +49,9 @@ def main() -> None:
             ("phrases", "vocals", 0.12),
             ("micro_phrases", "micro_vocals", 0.08),
         ):
-            directory_name = f"{default_directory}_style_{strength:03d}"
+            directory_name = (
+                f"{default_directory}{tag_suffix}_style_{strength:03d}"
+            )
             output_dir = package_dir / directory_name
             output_dir.mkdir(parents=True, exist_ok=True)
             for phrase in package.get(collection_name, []):

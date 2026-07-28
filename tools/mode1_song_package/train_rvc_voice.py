@@ -19,6 +19,7 @@ passwords or key contents in code or command-line arguments.
 from __future__ import annotations
 
 import argparse
+import base64
 import subprocess
 from pathlib import Path
 
@@ -67,33 +68,90 @@ def main() -> None:
     remote_wav = f"{REMOTE_ROOT}/{dataset_dir}/user_voice.wav"
 
     sample_rate_hz = {"32k": 32000, "40k": 40000, "48k": 48000}[args.sample_rate]
+    python_env = f'PYTHONPATH="{REMOTE_ROOT}"'
+    config_family = "v1" if args.version == "v1" or args.sample_rate == "40k" else "v2"
+    feature_dimension = 256 if args.version == "v1" else 768
+    prepare_experiment_code = f"""
+from pathlib import Path
+import json
+import random
+import shutil
+
+root = Path({REMOTE_ROOT!r})
+exp_dir = root / "logs" / {exp!r}
+gt_dir = exp_dir / "0_gt_wavs"
+feature_dir = exp_dir / {"3_feature" + str(feature_dimension)!r}
+f0_dir = exp_dir / "2a_f0"
+f0nsf_dir = exp_dir / "2b-f0nsf"
+
+names = (
+    {{path.stem for path in gt_dir.glob("*.wav")}}
+    & {{path.name.split(".")[0] for path in feature_dir.glob("*.npy")}}
+    & {{path.name.split(".")[0] for path in f0_dir.glob("*.npy")}}
+    & {{path.name.split(".")[0] for path in f0nsf_dir.glob("*.npy")}}
+)
+if not names:
+    raise SystemExit("No aligned audio/F0/feature files are available for training")
+
+lines = [
+    f"{{gt_dir / (name + '.wav')}}|{{feature_dir / (name + '.npy')}}|"
+    f"{{f0_dir / (name + '.wav.npy')}}|{{f0nsf_dir / (name + '.wav.npy')}}|0"
+    for name in sorted(names)
+]
+mute = root / "logs" / "mute"
+for _ in range(2):
+    lines.append(
+        f"{{mute / '0_gt_wavs' / 'mute{args.sample_rate}.wav'}}|"
+        f"{{mute / ('3_feature{feature_dimension}') / 'mute.npy'}}|"
+        f"{{mute / '2a_f0' / 'mute.wav.npy'}}|"
+        f"{{mute / '2b-f0nsf' / 'mute.wav.npy'}}|0"
+    )
+random.shuffle(lines)
+exp_dir.mkdir(parents=True, exist_ok=True)
+(exp_dir / "filelist.txt").write_text("\\n".join(lines), encoding="utf-8")
+config_path = exp_dir / "config.json"
+if not config_path.exists():
+    shutil.copyfile(
+        root / "configs" / {config_family!r} / {args.sample_rate + ".json"!r},
+        config_path,
+    )
+print(json.dumps({{"training_items": len(names), "filelist": str(exp_dir / "filelist.txt")}}))
+"""
+    encoded_prepare = base64.b64encode(
+        prepare_experiment_code.encode("utf-8")
+    ).decode("ascii")
     steps: list[tuple[str, str]] = []
 
     steps.append((
         "preprocess",
-        f'"{PYTHON_CMD}" train/preprocess.py "{dataset_dir}" {sample_rate_hz} '
+        f'{python_env} "{PYTHON_CMD}" -m train.preprocess "{dataset_dir}" {sample_rate_hz} '
         f'{args.num_processes} "{REMOTE_ROOT}/{log_dir}" False 3.7',
     ))
     steps.append((
         "extract_f0",
-        f'"{PYTHON_CMD}" train/dataset/extract_f0.py cuda 1 0 {args.gpu_index} '
+        f'{python_env} "{PYTHON_CMD}" -m train.dataset.extract_f0 cuda 1 0 {args.gpu_index} '
         f'"{REMOTE_ROOT}/{log_dir}" True',
     ))
     steps.append((
         "extract_feature",
-        f'"{PYTHON_CMD}" train/dataset/extract_hubert_feature.py cuda:{args.gpu_index} '
+        f'{python_env} "{PYTHON_CMD}" -m train.dataset.extract_hubert_feature cuda:{args.gpu_index} '
         f'1 0 {args.gpu_index} "{REMOTE_ROOT}/{log_dir}" {args.version} True',
     ))
     steps.append((
+        "prepare_experiment",
+        f'{python_env} "{PYTHON_CMD}" -c "import base64;'
+        f"exec(base64.b64decode('{encoded_prepare}'))\"",
+    ))
+    steps.append((
         "train",
-        f'"{PYTHON_CMD}" train/train.py -e "{exp}" -sr {args.sample_rate} -f0 1 '
+        f'{python_env} "{PYTHON_CMD}" -m train.train -e "{exp}" -sr {args.sample_rate} -f0 1 '
         f'-bs {args.batch_size} -g {args.gpu_index} -te {args.epochs} '
         f"-se {args.save_every} -pg assets/pretrained_v2/f0G40k.pth "
         f"-pd assets/pretrained_v2/f0D40k.pth -l 1 -c 1 -sw 1 -v {args.version}",
     ))
     steps.append((
         "train_index",
-        f'"{PYTHON_CMD}" train/train_index.py "{exp}" {args.version} '
+        f'{python_env} "{PYTHON_CMD}" -m train.train_index "{exp}" {args.version} '
         f'"assets/indices" 40',
     ))
 
@@ -101,12 +159,16 @@ def main() -> None:
         "preprocess": args.skip_preprocess,
         "extract_f0": args.skip_extract,
         "extract_feature": args.skip_extract,
+        "prepare_experiment": args.skip_train,
         "train": args.skip_train,
         "train_index": args.skip_index,
     }
 
     if args.dry_run:
-        print(f"mkdir -p {REMOTE_ROOT}/{dataset_dir}")
+        print(
+            f"mkdir -p {REMOTE_ROOT}/{dataset_dir} "
+            f"{REMOTE_ROOT}/{log_dir}"
+        )
         print(f"scp {args.voice_wav} -> {args.host}:{remote_wav}")
         for name, command in steps:
             marker = " (skipped)" if skip_flags[name] else ""
@@ -114,28 +176,41 @@ def main() -> None:
         return
 
     if not skip_flags["preprocess"]:
-        ssh(args.host, f"mkdir -p {REMOTE_ROOT}/{dataset_dir}")
+        ssh(
+            args.host,
+            f"mkdir -p {REMOTE_ROOT}/{dataset_dir} {REMOTE_ROOT}/{log_dir}",
+        )
         run(["scp", str(args.voice_wav.resolve()), f"{args.host}:{remote_wav}"])
 
     for name, command in steps:
         if skip_flags[name]:
             print(f"[{name}] skipped")
             continue
-        print(f"[{name}] running...")
+        print(f"[{name}] running...", flush=True)
         ssh(args.host, f"cd {REMOTE_ROOT} && {command}")
-        print(f"[{name}] done")
+        print(f"[{name}] done", flush=True)
 
-    weights_path = f"{REMOTE_ROOT}/assets/weights/{exp}.pth"
-    ssh(
-        args.host,
-        f"echo '--- resulting artifacts ---' && "
-        f"ls -la {weights_path} 2>&1 && "
-        f"ls -la {REMOTE_ROOT}/{log_dir}/added_*.index 2>&1",
-    )
-    print(
-        f"Done. Use --model {exp}.pth and the printed index path with "
-        "run_rvc_remote.py / run_rvc_variants_remote.py."
-    )
+    artifact_checks: list[str] = []
+    if not args.skip_train:
+        artifact_checks.append(
+            f"ls -la {REMOTE_ROOT}/assets/weights/{exp}.pth"
+        )
+    if not args.skip_index:
+        artifact_checks.append(
+            f"ls -la {REMOTE_ROOT}/{log_dir}/added_*.index"
+        )
+    if artifact_checks:
+        ssh(
+            args.host,
+            "echo '--- resulting artifacts ---' && "
+            + " && ".join(artifact_checks),
+        )
+        print(
+            f"Done. Use --model {exp}.pth and the printed index path with "
+            "run_rvc_remote.py / run_rvc_variants_remote.py."
+        )
+    else:
+        print("Requested stages completed.", flush=True)
 
 
 if __name__ == "__main__":

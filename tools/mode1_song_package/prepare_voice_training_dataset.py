@@ -45,6 +45,12 @@ def main() -> None:
     )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--gap-seconds", type=float, default=0.3)
+    parser.add_argument(
+        "--minimum-duration-seconds",
+        type=float,
+        default=0.0,
+        help="Fail before training when accepted audio is shorter than this.",
+    )
     args = parser.parse_args()
 
     profile_dir = args.profile_dir or find_latest_profile_dir(args.profiles_root)
@@ -71,6 +77,12 @@ def main() -> None:
             segments.append(np.zeros(int(sample_rate * args.gap_seconds), dtype="float32"))
 
     combined = np.concatenate(segments)
+    duration_seconds = len(combined) / sample_rate
+    if duration_seconds < args.minimum_duration_seconds:
+        raise SystemExit(
+            "Accepted clips are too short for retraining: "
+            f"{duration_seconds:.1f}s / {args.minimum_duration_seconds:.1f}s required"
+        )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     sf.write(args.output, combined, sample_rate, subtype="PCM_24")
 
@@ -84,7 +96,7 @@ def main() -> None:
         "profile_dir": str(profile_dir),
         **manifest_summary,
         "clips_combined": len(clip_paths),
-        "duration_seconds": round(len(combined) / sample_rate, 1),
+        "duration_seconds": round(duration_seconds, 1),
         "output": str(args.output.resolve()),
     }, ensure_ascii=False, indent=2))
 

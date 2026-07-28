@@ -88,7 +88,15 @@ public:
     }
     [[nodiscard]] int getMaximumManualKeyShift() const noexcept
     {
-        return std::max(6, -getBaseKeyShift());
+        return songPackage.getMaximumManualKeyShift();
+    }
+    [[nodiscard]] int getMinimumManualKeyShift() const noexcept
+    {
+        return songPackage.getMinimumManualKeyShift();
+    }
+    [[nodiscard]] bool hasMultipleExpressionStrengths() const noexcept
+    {
+        return songPackage.getExpressionStrengths().size() > 1;
     }
     [[nodiscard]] int getSelectedKeyAnchor() const noexcept
     {
