@@ -96,7 +96,7 @@ juce::File createFixturePackage()
       "phrase_id": "micro_001",
       "lyrics": "を",
       "score": { "start_sec": 2.5, "end_sec": 2.95 },
-      "source": { "start_sec": 2.5, "end_sec": 2.95 },
+      "source": { "start_sec": 2.7, "end_sec": 3.15 },
       "chords": [{ "start_sec": 2.5, "chord": "F", "raw_chord": "F" }],
       "vocal": { "directory": ".", "file": "tone.wav", "content_offset_sec": 0.0 },
       "vocal_key_variants": {
@@ -154,6 +154,12 @@ int main(int argc, char* argv[])
         package.getPhrases().front().lyrics
             .startsWith(juce::String::fromUTF8("君")),
         "UTF-8 lyrics were not preserved");
+    passed &= require(
+        package.getPhrases()[1].anchorChordEventIndex == 5
+            && std::abs(
+                package.getPhrases()[1].chordRelativeStartSeconds - 0.2)
+                < 1.0e-6,
+        "phrases should derive their chord segment and relative offset");
 
     mode1::PhraseScheduler scheduler;
     scheduler.prepare(48'000.0);
@@ -167,14 +173,27 @@ int main(int argc, char* argv[])
         "the first vocal chord should trigger phrase zero");
     passed &= require(
         scheduler.processBlock(512, false, true) == -1,
-        "an early chord must not compress the source vocal interval");
+        "a chord-segment phrase must wait for its relative offset");
     int preservedGapResult = -1;
     for (int block = 0; block < 60 && preservedGapResult < 0; ++block)
         preservedGapResult =
             scheduler.processBlock(512, false, false);
     passed &= require(
         preservedGapResult == 1,
-        "the next phrase should start after its preserved source interval");
+        "the next phrase should start at its chord-relative offset");
+
+    mode1::PhraseScheduler expiryScheduler;
+    expiryScheduler.prepare(48'000.0);
+    expiryScheduler.setSong(&package);
+    for (int chord = 0; chord < 5; ++chord)
+        expiryScheduler.processBlock(512, false, true);
+    passed &= require(
+        expiryScheduler.processBlock(512, false, true) == -1,
+        "a newly entered segment should not emit a future-offset phrase");
+    passed &= require(
+        expiryScheduler.processBlock(512, false, true) == 2
+            && expiryScheduler.getExpiredPhraseCount() == 1,
+        "crossing a chord boundary should expire stale unplayed phrases");
 
     mode1::PhraseScheduler guitarDrivenScheduler;
     guitarDrivenScheduler.prepare(48'000.0);
@@ -214,8 +233,15 @@ int main(int argc, char* argv[])
         waitingResult == -1,
         "a missing guitar onset must not auto-advance the lyrics");
     passed &= require(
-        guitarDrivenScheduler.processBlock(512, true, false) == 1,
-        "a late guitar onset should advance the waiting phrase");
+        guitarDrivenScheduler.processBlock(512, true, false) == -1,
+        "a late guitar onset should enter the next phrase segment");
+    int chordRelativeResult = -1;
+    for (int block = 0; block < 30 && chordRelativeResult < 0; ++block)
+        chordRelativeResult =
+            guitarDrivenScheduler.processBlock(512, false, false);
+    passed &= require(
+        chordRelativeResult == 1,
+        "the phrase should follow its offset within the detected chord");
 
     mode1::PhraseScheduler adaptiveTempoScheduler;
     adaptiveTempoScheduler.prepare(48'000.0);

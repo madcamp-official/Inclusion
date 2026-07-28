@@ -155,7 +155,8 @@ int main(int argc, char* argv[])
     eventRows.add("time_sec,phrase_index,lyrics");
     juce::StringArray trackingRows;
     trackingRows.add(
-        "time_sec,chord_event_index,tempo_scale,recovered_skipped_chords");
+        "time_sec,chord_event_index,tempo_scale,recovered_skipped_chords,"
+        "expired_phrases");
     juce::StringArray detectionRows;
     detectionRows.add("time_sec,raw_detected_chord");
     int previousPhrase = -1;
@@ -219,7 +220,9 @@ int main(int argc, char* argv[])
                 + "," + juce::String(
                     controller.getPerformanceTempoScale(), 6)
                 + "," + juce::String(
-                    controller.getRecoveredSkippedChordCount()));
+                    controller.getRecoveredSkippedChordCount())
+                + "," + juce::String(
+                    controller.getExpiredPhraseCount()));
             previousChordEvent = chordEvent;
         }
         const auto rawChord = controller.getRawDetectedChordName();
@@ -299,6 +302,8 @@ int main(int argc, char* argv[])
               << "tempo_scale=" << controller.getPerformanceTempoScale() << '\n'
               << "recovered_skipped_chords="
               << controller.getRecoveredSkippedChordCount() << '\n'
+              << "expired_phrases="
+              << controller.getExpiredPhraseCount() << '\n'
               << "vocal_peak=" << peakMagnitude(vocals) << '\n'
               << "combined_peak=" << peakMagnitude(combined) << '\n'
               << "vocal_output=" << vocalFile.getFullPathName() << '\n'

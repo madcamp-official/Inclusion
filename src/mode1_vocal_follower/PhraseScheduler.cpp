@@ -26,6 +26,7 @@ void PhraseScheduler::reset() noexcept
     lastPhraseTriggerPerformanceSeconds = 0.0;
     nextChordEventIndex = firstPlayableChordEvent();
     currentChordEventIndex = -1;
+    currentChordPerformanceStartSeconds = 0.0;
     running = false;
     secondsSinceChordMatch = 0.0;
     activeSecondsSinceChordMatch = 0.0;
@@ -36,6 +37,7 @@ void PhraseScheduler::reset() noexcept
     tempoAnchorEventIndex = -1;
     tempoAnchorPerformanceSeconds = 0.0;
     recoveredSkippedChordCount = 0;
+    expiredPhraseCount = 0;
 }
 
 double PhraseScheduler::normalizedScoreStartTime(int phraseIndex) const noexcept
@@ -230,6 +232,7 @@ int PhraseScheduler::advanceChordCursor(
     }
 
     currentChordEventIndex = matchedEventIndex;
+    currentChordPerformanceStartSeconds = performanceTimeSeconds;
     const auto& matchedEvent =
         song->getChordTimeline()[static_cast<size_t>(matchedEventIndex)];
     songTimeSeconds = matchedEvent.startSeconds;
@@ -248,21 +251,40 @@ int PhraseScheduler::startDueGuitarPhrase() noexcept
         return -1;
 
     const auto& phrases = song->getPhrases();
-    const auto phraseStart =
-        phrases[static_cast<size_t>(nextPhraseIndex)].sourceStartSeconds;
-    if (nextChordEventIndex >= 0)
+    while (nextPhraseIndex < static_cast<int>(phrases.size())
+        && phrases[static_cast<size_t>(
+            nextPhraseIndex)].anchorChordEventIndex >= 0
+        && phrases[static_cast<size_t>(
+            nextPhraseIndex)].anchorChordEventIndex
+            < currentChordEventIndex)
     {
-        const double nextChordStart = song->getChordTimeline()[
-            static_cast<size_t>(nextChordEventIndex)].startSeconds;
-        if (phraseStart >= nextChordStart)
-            return -1;
+        ++nextPhraseIndex;
+        ++expiredPhraseCount;
+        pendingDuePhraseIndex = -1;
     }
-    if (phraseStart - guitarVocalLeadSeconds > songTimeSeconds)
+    if (nextPhraseIndex >= static_cast<int>(phrases.size()))
+        return -1;
+
+    const auto& nextPhrase =
+        phrases[static_cast<size_t>(nextPhraseIndex)];
+    if (nextPhrase.anchorChordEventIndex < 0)
+        return -1;
+    if (nextPhrase.anchorChordEventIndex > currentChordEventIndex)
+        return -1;
+
+    const double segmentElapsedSeconds =
+        performanceTimeSeconds - currentChordPerformanceStartSeconds;
+    const double segmentTargetSeconds =
+        nextPhrase.chordRelativeStartSeconds
+            / juce::jlimit(0.80, 1.25, tempoScale)
+        - guitarVocalLeadSeconds;
+    if (segmentElapsedSeconds < segmentTargetSeconds)
         return -1;
 
     // If timing jumped forward at a chord boundary, never burst through a
-    // backlog of mora clips. Keep only the newest due mora and continue from
-    // there on the following score interval.
+    // backlog of mora clips. The chord anchor above expires older segments;
+    // within the current segment, phrases remain ordered and keep their
+    // source-relative spacing.
     int phraseToStart = pendingDuePhraseIndex;
     if (phraseToStart < 0)
     {
@@ -277,15 +299,22 @@ int PhraseScheduler::startDueGuitarPhrase() noexcept
     if (lastStartedPhraseIndex >= 0
         && phraseToStart > lastStartedPhraseIndex)
     {
-        const double sourceGap =
-            phrases[static_cast<size_t>(phraseToStart)].sourceStartSeconds
-            - phrases[static_cast<size_t>(lastStartedPhraseIndex)]
-                .sourceStartSeconds;
-        const double minimumRealGap =
-            sourceGap / juce::jlimit(0.80, 1.25, tempoScale);
-        if (performanceTimeSeconds - lastPhraseTriggerPerformanceSeconds
-            < minimumRealGap)
-            return -1;
+        const auto& lastPhrase =
+            phrases[static_cast<size_t>(lastStartedPhraseIndex)];
+        const auto& duePhrase =
+            phrases[static_cast<size_t>(phraseToStart)];
+        if (lastPhrase.anchorChordEventIndex
+            == duePhrase.anchorChordEventIndex)
+        {
+            const double sourceGap =
+                duePhrase.sourceStartSeconds
+                - lastPhrase.sourceStartSeconds;
+            const double minimumRealGap =
+                sourceGap / juce::jlimit(0.80, 1.25, tempoScale);
+            if (performanceTimeSeconds - lastPhraseTriggerPerformanceSeconds
+                < minimumRealGap)
+                return -1;
+        }
     }
 
     nextPhraseIndex = phraseToStart + 1;

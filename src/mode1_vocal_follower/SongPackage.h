@@ -34,6 +34,8 @@ struct Phrase
     double scoreEndSeconds = 0.0;
     double sourceStartSeconds = 0.0;
     double sourceEndSeconds = 0.0;
+    int anchorChordEventIndex = -1;
+    double chordRelativeStartSeconds = 0.0;
     double contentOffsetSeconds = 0.0;
     juce::File vocalFile;
     std::vector<VocalVariant> vocalVariants;

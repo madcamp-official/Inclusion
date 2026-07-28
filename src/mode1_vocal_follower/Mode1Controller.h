@@ -71,6 +71,10 @@ public:
     {
         return scheduler.getRecoveredSkippedChordCount();
     }
+    [[nodiscard]] int getExpiredPhraseCount() const noexcept
+    {
+        return scheduler.getExpiredPhraseCount();
+    }
     [[nodiscard]] int getCurrentChordEventIndex() const noexcept
     {
         return scheduler.getCurrentChordEventIndex();

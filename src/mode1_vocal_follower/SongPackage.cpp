@@ -323,6 +323,36 @@ bool SongPackage::loadFromFile(const juce::File& packageFile, juce::String& erro
     }
 
     phrases = std::move(loadedPhrases);
+    if (!chordTimeline.empty())
+    {
+        int latestPlayableChord = -1;
+        size_t chordCursor = 0;
+        for (auto& phrase : phrases)
+        {
+            while (chordCursor < chordTimeline.size()
+                && chordTimeline[chordCursor].startSeconds
+                    <= phrase.sourceStartSeconds + 1.0e-6)
+            {
+                const auto chord =
+                    chordTimeline[chordCursor].chord.trim().toUpperCase();
+                if (chord.isNotEmpty()
+                    && chord != "N"
+                    && chord != "N.C.")
+                    latestPlayableChord =
+                        static_cast<int>(chordCursor);
+                ++chordCursor;
+            }
+            phrase.anchorChordEventIndex = latestPlayableChord;
+            if (latestPlayableChord >= 0)
+            {
+                phrase.chordRelativeStartSeconds = std::max(
+                    0.0,
+                    phrase.sourceStartSeconds
+                        - chordTimeline[static_cast<size_t>(
+                            latestPlayableChord)].startSeconds);
+            }
+        }
+    }
     return true;
 }
 

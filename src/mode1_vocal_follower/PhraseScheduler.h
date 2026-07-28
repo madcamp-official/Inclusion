@@ -37,6 +37,10 @@ public:
     {
         return recoveredSkippedChordCount;
     }
+    [[nodiscard]] int getExpiredPhraseCount() const noexcept
+    {
+        return expiredPhraseCount;
+    }
 
 private:
     [[nodiscard]] double normalizedScoreStartTime(int phraseIndex) const noexcept;
@@ -61,6 +65,7 @@ private:
     double lastPhraseTriggerPerformanceSeconds = 0.0;
     int nextChordEventIndex = -1;
     int currentChordEventIndex = -1;
+    double currentChordPerformanceStartSeconds = 0.0;
     bool running = false;
     double secondsSinceChordMatch = 0.0;
     double activeSecondsSinceChordMatch = 0.0;
@@ -71,6 +76,7 @@ private:
     int tempoAnchorEventIndex = -1;
     double tempoAnchorPerformanceSeconds = 0.0;
     int recoveredSkippedChordCount = 0;
+    int expiredPhraseCount = 0;
     double guitarVocalLeadSeconds = 0.10;
 };
 
