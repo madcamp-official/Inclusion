@@ -62,7 +62,9 @@ echo "$layout"
 # (Scarlett Solo는 INPUT 1=XLR, INPUT 2=악기 잭이라 악기 잭이 뒤에 온다).
 vocal_ch=$(echo "$layout" | awk -v g="$guitar" '/입력 ch/ && index($0, g) == 0 { split($2, a, /ch|-/); print a[2]; exit }')
 guitar_ch=$(echo "$layout" | awk -v g="$guitar" '/입력 ch/ && index($0, g)  > 0 { split($2, a, /ch|-/); print a[3]; exit }')
-rate=$(echo "$layout" | awk -F'[()]' '/통합 기기를 만들었습니다/ { sub(/Hz/, "", $2); print $2; exit }')
+# 괄호로 필드를 자르면 안 된다 — 기기 이름 자체에 괄호가 들어간다("... (Mac Speakers)").
+# "(48000Hz)" 형태만 정확히 집는다.
+rate=$(echo "$layout" | sed -n 's/.*(\([0-9][0-9.]*\)Hz).*/\1/p' | head -1)
 
 if [ -z "$vocal_ch" ] || [ -z "$guitar_ch" ] || [ -z "$rate" ]; then
     echo "채널 배치를 읽지 못했습니다. 위 출력을 보고 앱에서 직접 고르세요."
