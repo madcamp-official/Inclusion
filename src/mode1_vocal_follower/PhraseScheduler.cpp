@@ -331,10 +331,12 @@ int PhraseScheduler::startDueGuitarPhrase() noexcept
         pendingDuePhraseIndex = phraseToStart;
     }
 
-    // Score-position recovery may jump the score clock forward, but it must
-    // not compress breathing spaces or syllable timing. Preserve the source
-    // interval from the last emitted micro phrase, scaled only by the
-    // performer's measured tempo.
+    // Stage 1 mora clock: every phrase keeps its own immutable target inside
+    // the current chord segment. Do not derive this phrase's target from the
+    // time at which the previous audio callback happened to emit a phrase.
+    // That old dependency added up to one block of drift per mora. The small
+    // collision guard below is only a final real-time safety net; a phrase
+    // that misses its target is late locally and does not move later targets.
     if (lastStartedPhraseIndex >= 0
         && phraseToStart > lastStartedPhraseIndex)
     {
@@ -342,22 +344,6 @@ int PhraseScheduler::startDueGuitarPhrase() noexcept
                 - lastPhraseTriggerPerformanceSeconds
             < 0.050)
             return -1;
-        const auto& lastPhrase =
-            phrases[static_cast<size_t>(lastStartedPhraseIndex)];
-        const auto& duePhrase =
-            phrases[static_cast<size_t>(phraseToStart)];
-        if (lastPhrase.anchorChordEventIndex
-            == duePhrase.anchorChordEventIndex)
-        {
-            const double sourceGap =
-                duePhrase.sourceStartSeconds
-                - lastPhrase.sourceStartSeconds;
-            const double minimumRealGap =
-                sourceGap / juce::jlimit(0.80, 1.25, tempoScale);
-            if (performanceTimeSeconds - lastPhraseTriggerPerformanceSeconds
-                < minimumRealGap)
-                return -1;
-        }
     }
 
     nextPhraseIndex = phraseToStart + 1;
