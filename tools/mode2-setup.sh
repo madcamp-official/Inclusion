@@ -1,0 +1,94 @@
+#!/bin/sh
+# 모드 2 오디오 세팅을 한 번에 끝낸다: 통합 기기 생성 → 앱 설정 파일 기록 → 앱 실행.
+#
+# 왜 있는가: 이 세팅을 손으로 하면 (1) 통합 기기 만들기 (2) 앱에서 기기 고르기
+# (3) 기타/목소리 채널 번호 찾아서 고르기 세 단계를 매번 반복하게 되고, 채널 번호는
+# 서브기기 순서에 따라 달라져서 결국 녹음해 보며 확인하게 된다. 채널 번호는 통합 기기를
+# 만든 도구가 이미 알고 있으므로, 그 출력을 그대로 앱 설정 파일에 적어 넣으면 화면에서
+# 고를 일이 없다.
+#
+# 사용법:
+#   tools/mode2-setup.sh [프리셋]
+#   tools/mode2-setup.sh --no-launch [프리셋]   앱은 실행하지 않는다
+#
+# 프리셋:
+#   airpods   (기본) 출력=에어팟, 목소리=에어팟 마이크, 기타=Scarlett 악기 잭
+#             전부 에어팟으로 듣는 구성. 무선이라 왕복 지연 80ms대 — 소리 확인용이고
+#             연주감(타이밍) 평가에는 쓸 수 없다.
+#   speakers  출력=맥북 스피커, 목소리=에어팟 마이크, 기타=Scarlett 악기 잭
+#             지연이 낮은 대신 스피커+마이크라 하울링 고리가 생긴다. 앱의 "하울링 억제"를
+#             켜고 출력 볼륨을 낮춰서 시작할 것.
+#   builtin   출력=맥북 스피커, 목소리=맥북 내장 마이크, 기타=Scarlett 악기 잭
+#             에어팟 없이 확인할 때.
+#
+# 자세한 배경은 docs/오디오-장치-설정.md 참고.
+
+set -e
+cd "$(dirname "$0")/.."
+
+launch=1
+if [ "$1" = "--no-launch" ]; then
+    launch=0
+    shift
+fi
+
+case "${1:-airpods}" in
+    airpods)  device_name="Scarlett + AirPods";                  output="AirPods";     mic="AirPods" ;;
+    speakers) device_name="Guitar + AirPods Mic (Mac Speakers)"; output="MacBook Pro"; mic="AirPods" ;;
+    builtin)  device_name="Guitar + Built-in Mic";               output="MacBook Pro"; mic="MacBook Pro" ;;
+    *)
+        echo "알 수 없는 프리셋: $1"
+        echo "쓸 수 있는 값: airpods, speakers, builtin"
+        exit 1 ;;
+esac
+guitar="Scarlett Solo"
+
+# 앱이 떠 있으면 먼저 닫는다. 앱은 종료할 때 자기 설정을 저장하므로, 켜 둔 채로 설정
+# 파일을 고쳐 봐야 종료하는 순간 예전 값으로 덮어쓰인다.
+if pgrep -qf "Vocal Guitar App"; then
+    echo "실행 중인 앱을 닫습니다."
+    osascript -e 'tell application "Vocal Guitar App" to quit' >/dev/null 2>&1 || true
+    sleep 2
+fi
+
+cmake --build build --target Mode2AudioDevice >/dev/null
+[ "$launch" -eq 1 ] && cmake --build build --target VocalGuitarApp >/dev/null
+
+layout=$(build/Mode2AudioDevice create "$device_name" "$output" "$mic" "$guitar")
+echo "$layout"
+
+# 채널 번호는 도구가 찍어 준 배치에서 그대로 읽는다("입력 ch1-2 (앱: 채널 2-3) Scarlett...").
+# 목소리는 마이크 기기의 첫 채널, 기타는 인터페이스의 마지막 채널이다
+# (Scarlett Solo는 INPUT 1=XLR, INPUT 2=악기 잭이라 악기 잭이 뒤에 온다).
+vocal_ch=$(echo "$layout" | awk -v g="$guitar" '/입력 ch/ && index($0, g) == 0 { split($2, a, /ch|-/); print a[2]; exit }')
+guitar_ch=$(echo "$layout" | awk -v g="$guitar" '/입력 ch/ && index($0, g)  > 0 { split($2, a, /ch|-/); print a[3]; exit }')
+rate=$(echo "$layout" | awk -F'[()]' '/통합 기기를 만들었습니다/ { sub(/Hz/, "", $2); print $2; exit }')
+
+if [ -z "$vocal_ch" ] || [ -z "$guitar_ch" ] || [ -z "$rate" ]; then
+    echo "채널 배치를 읽지 못했습니다. 위 출력을 보고 앱에서 직접 고르세요."
+    exit 1
+fi
+
+settings_dir="$HOME/Library/VocalGuitarApp"
+mkdir -p "$settings_dir"
+cat > "$settings_dir/AudioDeviceSettings.xml" <<XML
+<?xml version="1.0" encoding="UTF-8"?>
+
+<DEVICESETUP deviceType="CoreAudio" audioOutputDeviceName="$device_name"
+             audioInputDeviceName="$device_name" audioDeviceRate="$rate.0"
+             audioDeviceBufferSize="256"/>
+XML
+cat > "$settings_dir/Mode2ChannelMap.xml" <<XML
+<?xml version="1.0" encoding="UTF-8"?>
+
+<CHANNELMAP guitarChannel="$guitar_ch" vocalChannel="$vocal_ch"/>
+XML
+
+echo
+echo "앱 설정을 적었습니다: 기기 \"$device_name\" ${rate}Hz,"
+echo "  목소리 = 채널 $((vocal_ch + 1)), 기타 = 채널 $((guitar_ch + 1)) (화면 표시 기준)"
+
+if [ "$launch" -eq 1 ]; then
+    open "build/VocalGuitarApp_artefacts/Debug/Vocal Guitar App.app"
+    echo "앱을 실행했습니다. 화면 위쪽 기기 이름이 \"$device_name\"인지 확인하세요."
+fi
