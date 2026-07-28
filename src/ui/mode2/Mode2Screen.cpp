@@ -54,6 +54,17 @@ Mode2Screen::Mode2Screen(Mode2Controller& controllerIn)
     addAndMakeVisible(guitarChannelBox);
     addAndMakeVisible(vocalChannelBox);
 
+    roomChannelLabel.setText(utf8("녹음에 함께 담을 채널 (스피커 앞 마이크)"), juce::dontSendNotification);
+    roomChannelLabel.setJustificationType(juce::Justification::centredLeft);
+    addAndMakeVisible(roomChannelLabel);
+    // id 1 = 없음, id 2.. = 채널 1..  (선택 id - 2 가 채널 인덱스, 없음이면 -1)
+    roomChannelBox.onChange = [this]
+    {
+        if (onRoomChannelChanged != nullptr)
+            onRoomChannelChanged(roomChannelBox.getSelectedId() - 2);
+    };
+    addAndMakeVisible(roomChannelBox);
+
     pitchShifterLabel.setText(utf8("피치 시프터 A/B"), juce::dontSendNotification);
     pitchShifterLabel.setJustificationType(juce::Justification::centredLeft);
     addAndMakeVisible(pitchShifterLabel);
@@ -231,21 +242,28 @@ Mode2Screen::~Mode2Screen()
     stopTimer();
 }
 
-void Mode2Screen::setAvailableInputChannels(int numChannels, int guitarChannel, int vocalChannel)
+void Mode2Screen::setAvailableInputChannels(int numChannels, int guitarChannel, int vocalChannel,
+                                            int roomChannel)
 {
     // ComboBox의 item id는 0을 쓸 수 없으므로 채널 인덱스 + 1로 저장한다.
     guitarChannelBox.clear(juce::dontSendNotification);
     vocalChannelBox.clear(juce::dontSendNotification);
+    // 방 마이크는 "없음"이 필요하므로 한 칸씩 더 밀어서 id = 채널 + 2 로 둔다.
+    roomChannelBox.clear(juce::dontSendNotification);
+    roomChannelBox.addItem(utf8("없음"), 1);
 
     for (int ch = 0; ch < numChannels; ++ch)
     {
         const auto name = utf8("채널 ") + juce::String(ch + 1);
         guitarChannelBox.addItem(name, ch + 1);
         vocalChannelBox.addItem(name, ch + 1);
+        roomChannelBox.addItem(name, ch + 2);
     }
 
     guitarChannelBox.setSelectedId(juce::jlimit(0, numChannels - 1, guitarChannel) + 1, juce::dontSendNotification);
     vocalChannelBox.setSelectedId(juce::jlimit(0, numChannels - 1, vocalChannel) + 1, juce::dontSendNotification);
+    roomChannelBox.setSelectedId(roomChannel >= 0 && roomChannel < numChannels ? roomChannel + 2 : 1,
+                                 juce::dontSendNotification);
 }
 
 void Mode2Screen::setLatencyInfo(double inputMs, double outputMs, double processingMs)
@@ -371,6 +389,9 @@ void Mode2Screen::resized()
         guitarChannelBox.setBounds(row.removeFromLeft(row.getWidth() / 2).reduced(0, 0));
         vocalChannelBox.setBounds(row.reduced(6, 0));
     }
+    area.removeFromTop(6);
+    roomChannelLabel.setBounds(area.removeFromTop(20));
+    roomChannelBox.setBounds(area.removeFromTop(26));
     area.removeFromTop(8);
     pitchShifterLabel.setBounds(area.removeFromTop(20));
     pitchShifterBox.setBounds(area.removeFromTop(28));

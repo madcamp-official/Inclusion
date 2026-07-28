@@ -17,7 +17,12 @@ public:
     // 달라지므로(Scarlett Solo는 INPUT 1=XLR, INPUT 2=기타 잭. 통합 기기는 채널 3개 이상)
     // 하드코딩하지 않는다.
     std::function<void(int guitarChannel, int vocalChannel)> onInputChannelsChanged;
-    void setAvailableInputChannels(int numChannels, int guitarChannel, int vocalChannel);
+
+    // 녹음에만 함께 담을 채널(-1 = 없음). 스피커 앞에 둔 마이크를 통합 기기에 물려두면,
+    // 앱이 만든 소리와 반주(유튜브 등)가 섞여 실제로 들린 그대로가 한 파일에 남는다.
+    // 처리에는 쓰지 않으므로 음정 경로에는 영향이 없다.
+    std::function<void(int roomChannel)> onRoomChannelChanged;
+    void setAvailableInputChannels(int numChannels, int guitarChannel, int vocalChannel, int roomChannel);
 
     // 진단 녹음 토글. 눌리면 호출자가 실제 녹음 상태를 돌려준다(true = 녹음 중).
     std::function<bool()> onToggleRecording;
@@ -57,6 +62,9 @@ private:
     juce::Label channelMapLabel;
     juce::ComboBox guitarChannelBox;
     juce::ComboBox vocalChannelBox;
+
+    juce::Label roomChannelLabel;
+    juce::ComboBox roomChannelBox;
 
     juce::Label pitchShifterLabel;
     juce::ComboBox pitchShifterBox;

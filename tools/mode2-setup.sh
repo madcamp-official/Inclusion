@@ -39,9 +39,10 @@ if [ "$1" = "--no-launch" ]; then
 fi
 
 case "${1:-airpods}" in
-    airpods)  device_name="Scarlett + AirPods";                  output="AirPods";     mic="AirPods" ;;
-    speakers) device_name="Guitar + AirPods Mic (Mac Speakers)"; output="MacBook Pro"; mic="AirPods" ;;
-    builtin)  device_name="Guitar + Built-in Mic";               output="MacBook Pro"; mic="MacBook Pro" ;;
+    airpods)  device_name="Scarlett + AirPods";                  output="AirPods";     mic="AirPods";      room="MacBook Pro 마이크" ;;
+    speakers) device_name="Guitar + AirPods Mic (Mac Speakers)"; output="MacBook Pro"; mic="AirPods";      room="MacBook Pro 마이크" ;;
+    # 내장 마이크가 이미 목소리 채널이라 같은 기기를 두 번 넣을 수 없다.
+    builtin)  device_name="Guitar + Built-in Mic";               output="MacBook Pro"; mic="MacBook Pro";  room="" ;;
     *)
         echo "알 수 없는 프리셋: $1"
         echo "쓸 수 있는 값: airpods, speakers, builtin"
@@ -60,7 +61,14 @@ fi
 cmake --build build --target Mode2AudioDevice >/dev/null
 [ "$launch" -eq 1 ] && cmake --build build --target VocalGuitarApp >/dev/null
 
-layout=$(build/Mode2AudioDevice create "$device_name" "$output" "$mic" "$guitar")
+# 방 마이크(스피커 앞에서 실제 들리는 소리를 받는 마이크)를 입력으로 하나 더 붙인다.
+# 처리에는 쓰지 않고 녹음에만 담긴다 — 앱 출력과 유튜브 반주가 섞인 "실제로 들린 소리"가
+# 한 파일에 남아야 나중에 그대로 다시 들어볼 수 있다.
+if [ -n "$room" ]; then
+    layout=$(build/Mode2AudioDevice create "$device_name" "$output" "$mic" "$guitar" "$room")
+else
+    layout=$(build/Mode2AudioDevice create "$device_name" "$output" "$mic" "$guitar")
+fi
 echo "$layout"
 
 # 채널 번호는 도구가 찍어 준 배치에서 그대로 읽는다("입력 ch1-2 (앱: 채널 2-3) Scarlett...").
@@ -71,6 +79,11 @@ guitar_ch=$(echo "$layout" | awk -v g="$guitar" '/입력 ch/ && index($0, g)  > 
 # 괄호로 필드를 자르면 안 된다 — 기기 이름 자체에 괄호가 들어간다("... (Mac Speakers)").
 # "(48000Hz)" 형태만 정확히 집는다.
 rate=$(echo "$layout" | sed -n 's/.*(\([0-9][0-9.]*\)Hz).*/\1/p' | head -1)
+# 방 마이크는 이름으로 찾는다. 없으면 -1(앱에서 "없음").
+if [ -n "$room" ]; then
+    room_ch=$(echo "$layout" | awk -v r="$room" '/입력 ch/ && index($0, r) > 0 { split($2, a, /ch|-/); print a[2]; exit }')
+fi
+: "${room_ch:=-1}"
 
 if [ -z "$vocal_ch" ] || [ -z "$guitar_ch" ] || [ -z "$rate" ]; then
     echo "채널 배치를 읽지 못했습니다. 위 출력을 보고 앱에서 직접 고르세요."
@@ -89,12 +102,16 @@ XML
 cat > "$settings_dir/Mode2ChannelMap.xml" <<XML
 <?xml version="1.0" encoding="UTF-8"?>
 
-<CHANNELMAP guitarChannel="$guitar_ch" vocalChannel="$vocal_ch"/>
+<CHANNELMAP guitarChannel="$guitar_ch" vocalChannel="$vocal_ch" roomChannel="$room_ch"/>
 XML
 
 echo
 echo "앱 설정을 적었습니다: 기기 \"$device_name\" ${rate}Hz,"
 echo "  목소리 = 채널 $((vocal_ch + 1)), 기타 = 채널 $((guitar_ch + 1)) (화면 표시 기준)"
+if [ "$room_ch" -ge 0 ] 2>/dev/null; then
+    echo "  녹음에 함께 담을 채널 = 채널 $((room_ch + 1)) ($room)"
+    echo "  → \"녹음 시작\"을 누르면 4채널로 남는다: 기타 / 목소리 / 앱 출력 / 스피커 앞 소리"
+fi
 
 if [ "$launch" -eq 1 ]; then
     open "build/VocalGuitarApp_artefacts/Debug/Vocal Guitar App.app"

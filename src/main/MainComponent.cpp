@@ -51,6 +51,11 @@ MainComponent::MainComponent()
         vocalChannelIndex.store(vocalChannel);
         saveChannelMap();
     };
+    mode2Screen.onRoomChannelChanged = [this](int roomChannel)
+    {
+        roomChannelIndex.store(roomChannel < 0 ? -1 : roomChannel);
+        saveChannelMap();
+    };
     mode2Screen.onToggleRecording = [this] { return toggleRecording(); };
     mode2Screen.onPitchShifterBackendChanged = [this](PitchShifterEngine::Backend backend)
     {
@@ -177,9 +182,11 @@ void MainComponent::refreshChannelChoices()
     if (auto* device = deviceManager.getCurrentAudioDevice())
         numInputs = juce::jmax(1, device->getActiveInputChannels().countNumberOfSetBits());
 
+    const int room = roomChannelIndex.load();
     mode2Screen.setAvailableInputChannels(numInputs,
                                           juce::jlimit(0, numInputs - 1, guitarChannelIndex.load()),
-                                          juce::jlimit(0, numInputs - 1, vocalChannelIndex.load()));
+                                          juce::jlimit(0, numInputs - 1, vocalChannelIndex.load()),
+                                          room < numInputs ? room : -1);
 }
 
 juce::File MainComponent::getAudioSettingsFile()
@@ -209,6 +216,7 @@ void MainComponent::saveChannelMap()
     juce::XmlElement xml("CHANNELMAP");
     xml.setAttribute("guitarChannel", guitarChannelIndex.load());
     xml.setAttribute("vocalChannel", vocalChannelIndex.load());
+    xml.setAttribute("roomChannel", roomChannelIndex.load());
 
     const auto file = getChannelMapFile();
     file.getParentDirectory().createDirectory();
@@ -225,6 +233,7 @@ void MainComponent::loadChannelMap()
     {
         guitarChannelIndex.store(xml->getIntAttribute("guitarChannel", 0));
         vocalChannelIndex.store(xml->getIntAttribute("vocalChannel", 1));
+        roomChannelIndex.store(xml->getIntAttribute("roomChannel", -1));
     }
 }
 
@@ -250,7 +259,9 @@ void MainComponent::startRecording()
 
     juce::WavAudioFormat wav;
     // ch0 = 기타 입력, ch1 = 목소리 입력(부스트 전), ch2 = 최종 출력.
-    auto* writer = wav.createWriterFor(stream.get(), currentSampleRate, 3, 24, {}, 0);
+    // 방 마이크 채널을 골라 두면 ch3 = 스피커 앞에서 받은 소리(앱 출력 + 반주가 섞인 실제 청취음).
+    recordingChannelCount = roomChannelIndex.load() >= 0 ? 4 : 3;
+    auto* writer = wav.createWriterFor(stream.get(), currentSampleRate, recordingChannelCount, 24, {}, 0);
     if (writer == nullptr)
         return;
 
@@ -314,6 +325,7 @@ void MainComponent::getNextAudioBlock(const juce::AudioSourceChannelInfo& buffer
     {
         guitarInputScratch.resize(static_cast<size_t>(numSamples));
         vocalInputScratch.resize(static_cast<size_t>(numSamples));
+        roomInputScratch.resize(static_cast<size_t>(numSamples));
     }
 
     // 뒤에서 outL/outR로 같은 버퍼 채널에 덮어쓰므로, 입력을 먼저 스크래치로 복사해 둔다.
@@ -324,6 +336,16 @@ void MainComponent::getNextAudioBlock(const juce::AudioSourceChannelInfo& buffer
     const float* vocalRead = buffer.getReadPointer(vocalChannel, startSample);
     std::copy(guitarRead, guitarRead + numSamples, guitarInputScratch.begin());
     std::copy(vocalRead, vocalRead + numSamples, vocalInputScratch.begin());
+
+    // 방 마이크도 여기서 복사해 둔다. 아래에서 출력이 채널 0-1을 덮어쓰므로, 방 마이크를
+    // 그 채널에 물린 경우에도 덮이기 전 값이 남아야 한다.
+    const int roomChannel = roomChannelIndex.load();
+    const bool haveRoom = roomChannel >= 0 && roomChannel <= lastChannel;
+    if (haveRoom)
+    {
+        const float* roomRead = buffer.getReadPointer(roomChannel, startSample);
+        std::copy(roomRead, roomRead + numSamples, roomInputScratch.begin());
+    }
 
 #if MODE2_DIAGNOSTIC_LOG
     {
@@ -358,7 +380,15 @@ void MainComponent::getNextAudioBlock(const juce::AudioSourceChannelInfo& buffer
         const juce::ScopedTryLock stl(writerLock);
         if (stl.isLocked() && activeWriter != nullptr)
         {
-            const float* channels[3] = { guitarInputScratch.data(), vocalInputScratch.data(), outL };
+            // 채널 수는 녹음을 시작할 때 정해졌다. 도중에 방 마이크 선택이 바뀌어도
+            // writer가 기대하는 개수를 그대로 유지해야 한다(무음으로 채운다).
+            const float* channels[4] = { guitarInputScratch.data(), vocalInputScratch.data(), outL,
+                                         haveRoom ? roomInputScratch.data() : nullptr };
+            if (recordingChannelCount == 4 && channels[3] == nullptr)
+            {
+                std::fill(roomInputScratch.begin(), roomInputScratch.begin() + numSamples, 0.0f);
+                channels[3] = roomInputScratch.data();
+            }
             activeWriter->write(channels, numSamples);
         }
     }

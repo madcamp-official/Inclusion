@@ -64,9 +64,12 @@ private:
     // INPUT 1=XLR 마이크, INPUT 2=기타 잭. 통합 기기를 쓰면 채널이 3개 이상) 사용자가 직접 고른다.
     std::atomic<int> guitarChannelIndex { 0 };
     std::atomic<int> vocalChannelIndex { 1 };
+    // 녹음에만 함께 담을 채널(-1 = 없음). 처리 경로에는 쓰지 않는다.
+    std::atomic<int> roomChannelIndex { -1 };
 
     std::vector<float> guitarInputScratch;
     std::vector<float> vocalInputScratch;
+    std::vector<float> roomInputScratch;
 
     // 진단 녹음. activeWriter는 오디오 스레드가 읽으므로 writerLock으로 보호한다.
     juce::TimeSliceThread recorderThread { "VocalGuitarApp wav writer" };
@@ -74,6 +77,8 @@ private:
     juce::CriticalSection writerLock;
     juce::AudioFormatWriter::ThreadedWriter* activeWriter = nullptr;
     juce::File recordingFile;
+    // 녹음 시작 시점에 정해진다. 방 마이크가 없으면 3, 있으면 4.
+    int recordingChannelCount = 3;
     double currentSampleRate = 48000.0;
     static juce::File getRecordingsDirectory();
     void startRecording();
