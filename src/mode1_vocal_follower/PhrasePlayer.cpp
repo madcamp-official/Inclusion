@@ -200,9 +200,13 @@ void PhrasePlayer::clear()
     currentBank.reset();
 }
 
-void PhrasePlayer::requestPhrase(int phraseIndex, float accent) noexcept
+void PhrasePlayer::requestPhrase(
+    int phraseIndex,
+    float accent,
+    double targetDurationSeconds) noexcept
 {
     requestedAccent.store(juce::jlimit(0.0f, 1.0f, accent));
+    requestedDurationSeconds.store(std::max(0.0, targetDurationSeconds));
     requestedPhraseIndex.store(phraseIndex);
 }
 
@@ -229,6 +233,9 @@ void PhrasePlayer::resetVoice(PlaybackVoice& voice) noexcept
     voice.active = false;
     voice.currentPitchSemitones = 0.0f;
     voice.accentGain = 1.0f;
+    voice.elasticTempo = 1.0f;
+    voice.attackEndSample = 0;
+    voice.releaseStartSample = 0;
 #if HAVE_SOUNDTOUCH
     voice.soundTouch.clear();
 #endif
@@ -277,9 +284,25 @@ void PhrasePlayer::startRequestedPhrase(int phraseIndex) noexcept
     // Subtle range (+/-8%): audible dynamics without pumping or drawing
     // attention to itself between neighbouring phrases.
     voice.accentGain = 0.92f + 0.16f * requestedAccent.load();
+    // Stage 2: preserve the consonant attack and release, and let only the
+    // stable middle of a mora absorb modest performance-tempo differences.
+    // The bounds intentionally avoid the metallic artifacts caused by using
+    // a micro clip as an unlimited time-stretch loop.
+    const int playableSamples =
+        variant.playbackEndSamples - variant.contentOffsetSamples;
+    const double naturalSeconds = playableSamples / outputSampleRate;
+    const double targetSeconds = requestedDurationSeconds.load();
+    if (targetSeconds > 0.02 && naturalSeconds > 0.02)
+        voice.elasticTempo = static_cast<float>(juce::jlimit(
+            0.86, 1.16, naturalSeconds / targetSeconds));
+    voice.attackEndSample = variant.contentOffsetSamples
+        + std::min(playableSamples / 3, juce::roundToInt(0.045 * outputSampleRate));
+    voice.releaseStartSample = variant.playbackEndSamples
+        - std::min(playableSamples / 3, juce::roundToInt(0.035 * outputSampleRate));
     voice.active = true;
 #if HAVE_SOUNDTOUCH
     voice.soundTouch.setPitchSemiTones(voice.currentPitchSemitones);
+    voice.soundTouch.setTempo(1.0);
 #endif
     newestVoiceIndex = nextVoiceIndex;
     currentPhraseIndex.store(phraseIndex);
@@ -328,6 +351,13 @@ void PhrasePlayer::renderVoice(
         {
             const int feedCount =
                 std::min(1024, sourceLength - voice.sourcePosition);
+#if HAVE_SOUNDTOUCH
+            const bool stableVowel =
+                voice.sourcePosition >= voice.attackEndSample
+                && voice.sourcePosition < voice.releaseStartSample;
+            voice.soundTouch.setTempo(
+                stableVowel ? voice.elasticTempo : 1.0f);
+#endif
             voice.soundTouch.putSamples(
                 source + voice.sourcePosition,
                 static_cast<unsigned int>(feedCount));

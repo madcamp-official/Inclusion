@@ -145,7 +145,15 @@ void Mode1Controller::processBlock(
         scheduler.getCurrentChordEventIndex());
     if (phraseToStart >= 0)
     {
-        phrasePlayer.requestPhrase(phraseToStart);
+        const auto& phrases = songPackage.getPhrases();
+        const auto& phrase = phrases[static_cast<size_t>(phraseToStart)];
+        // The written mora duration is independent of callback lateness.
+        // This gives the renderer a bounded elastic target while rests remain
+        // represented by the gap after sourceEndSeconds.
+        const double targetDuration =
+            (phrase.sourceEndSeconds - phrase.sourceStartSeconds)
+            / juce::jlimit(0.80, 1.25, scheduler.getTempoScale());
+        phrasePlayer.requestPhrase(phraseToStart, 0.5f, targetDuration);
         lastStartedPhrase.store(phraseToStart);
     }
 

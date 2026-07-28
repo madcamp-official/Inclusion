@@ -32,7 +32,10 @@ public:
 
     // accent (0..1, 0.5 = neutral) subtly scales this phrase's playback gain
     // to reflect how hard the guitar was just strummed.
-    void requestPhrase(int phraseIndex, float accent = 0.5f) noexcept;
+    void requestPhrase(
+        int phraseIndex,
+        float accent = 0.5f,
+        double targetDurationSeconds = 0.0) noexcept;
     void setPitchSemitones(float semitones) noexcept
     {
         targetPitchSemitones.store(semitones);
@@ -87,6 +90,9 @@ private:
         bool active = false;
         float currentPitchSemitones = 0.0f;
         float accentGain = 1.0f;
+        float elasticTempo = 1.0f;
+        int attackEndSample = 0;
+        int releaseStartSample = 0;
         std::vector<float> scratch;
 #if HAVE_SOUNDTOUCH
         soundtouch::SoundTouch soundTouch;
@@ -116,6 +122,7 @@ private:
 
     std::atomic<int> requestedPhraseIndex { -1 };
     std::atomic<float> requestedAccent { 0.5f };
+    std::atomic<double> requestedDurationSeconds { 0.0 };
     std::atomic<int> currentPhraseIndex { -1 };
     std::atomic<bool> playing { false };
 
