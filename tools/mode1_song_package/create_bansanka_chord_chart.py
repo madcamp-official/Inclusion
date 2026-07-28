@@ -124,6 +124,9 @@ def load_chart(package_path: Path) -> dict:
     for cues in lyrics_by_row.values():
         cues.sort(key=lambda cue: cue["exact_beat"])
 
+    first_loop_events = timeline[:4]
+    key_style = package.get("key_style", {})
+    manual_range = key_style.get("manual_key_shift_range", [-3, 3])
     return {
         "bpm": bpm,
         "beat_seconds": beat_seconds,
@@ -135,6 +138,18 @@ def load_chart(package_path: Path) -> dict:
         "original_states": original_states,
         "lyrics_by_row": lyrics_by_row,
         "maximum_error": maximum_error,
+        "base_key_shift": int(package.get("base_key_shift", 0)),
+        "manual_key_shift_range": [
+            int(manual_range[0]),
+            int(manual_range[1]),
+        ],
+        "first_loop": " - ".join(
+            str(event["chord"]) for event in first_loop_events
+        ),
+        "original_first_loop": " - ".join(
+            str(event.get("original_chord", event["chord"]))
+            for event in first_loop_events
+        ),
     }
 
 
@@ -219,9 +234,9 @@ def draw_cover(canvas: Canvas, chart: dict) -> None:
         96,
         "내 기본키로 연주",
         [
-            "키 슬라이더: 0",
+            f"자동 기준: {chart['base_key_shift']:+d} st | 키 슬라이더: 0",
             "큰 검정 코드만 연주",
-            "첫 루프: Eb/G - Ab - Bb - Cm7",
+            f"첫 루프: {chart['first_loop']}",
             "바레가 어렵다면 같은 루트의 간단한 코드 폼을 사용",
         ],
         accent=NAVY,
@@ -232,12 +247,13 @@ def draw_cover(canvas: Canvas, chart: dict) -> None:
         330,
         PAGE_WIDTH - 76,
         96,
-        "원곡 코드로 연주",
+        "원곡 코드 참고",
         [
-            "키 슬라이더: +5 또는 +17",
-            "작은 청록 코드만 연주",
-            "첫 루프: Ab/C - Db - Eb - Fm7",
-            "+17에서는 원곡 옥타브를 그대로 사용",
+            f"현재 키 조절 한도: {chart['manual_key_shift_range'][0]:+d}"
+            f" ~ {chart['manual_key_shift_range'][1]:+d} st",
+            "작은 청록 코드는 원곡 참고용",
+            f"첫 루프: {chart['original_first_loop']}",
+            "실제 연주는 큰 검정 코드를 사용",
         ],
         accent=BLUE,
     )
@@ -473,7 +489,8 @@ def draw_chart_page(
     canvas.drawString(
         28,
         PAGE_HEIGHT - 50,
-        f"M{start_bar:02d}-M{end_bar:02d} | 큰 검정: 기본키(-17, slider 0) | 작은 청록: 원곡키",
+        f"M{start_bar:02d}-M{end_bar:02d} | 큰 검정: 기본키("
+        f"{chart['base_key_shift']:+d}, slider 0) | 작은 청록: 원곡키",
     )
     canvas.setFillColor(CHANGE)
     canvas.rect(PAGE_WIDTH - 128, PAGE_HEIGHT - 49, 9, 9, fill=1, stroke=0)

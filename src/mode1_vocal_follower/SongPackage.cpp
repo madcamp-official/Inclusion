@@ -135,6 +135,32 @@ bool SongPackage::loadFromFile(const juce::File& packageFile, juce::String& erro
     }
     const auto packageDirectory = packageFile.getParentDirectory();
 
+    if (const auto* chordArray =
+            rootObject->getProperty("chord_timeline").getArray())
+    {
+        chordTimeline.reserve(static_cast<size_t>(chordArray->size()));
+        for (const auto& chordValue : *chordArray)
+        {
+            const auto* chordObject = chordValue.getDynamicObject();
+            if (chordObject == nullptr)
+                continue;
+
+            const auto chord = stringProperty(chordObject, "chord");
+            chordTimeline.push_back({
+                numberProperty(chordObject, "start_sec"),
+                chord,
+                stringProperty(chordObject, "raw_chord"),
+            });
+        }
+        std::sort(
+            chordTimeline.begin(),
+            chordTimeline.end(),
+            [](const ChordEvent& left, const ChordEvent& right)
+            {
+                return left.startSeconds < right.startSeconds;
+            });
+    }
+
     std::vector<Phrase> loadedPhrases;
     loadedPhrases.reserve(static_cast<size_t>(phraseArray->size()));
 
@@ -313,6 +339,7 @@ void SongPackage::clear()
     hasManualKeyShiftRange = false;
     manualKeyShiftMinimum = -6;
     manualKeyShiftMaximum = 6;
+    chordTimeline.clear();
     phrases.clear();
 }
 

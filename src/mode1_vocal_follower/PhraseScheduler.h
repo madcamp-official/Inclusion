@@ -10,6 +10,10 @@ class PhraseScheduler
 public:
     void prepare(double sampleRate);
     void setSong(const SongPackage* package);
+    void setOutputLatencySeconds(double seconds) noexcept
+    {
+        guitarVocalLeadSeconds = juce::jlimit(0.0, 0.08, seconds);
+    }
     void reset() noexcept;
 
     // Returns the phrase index to start, or -1 when no phrase starts.
@@ -17,22 +21,57 @@ public:
         int numSamples,
         bool guitarOnset,
         bool manualTrigger,
-        bool automaticPlayback = false) noexcept;
+        bool automaticPlayback = false,
+        bool guitarActive = false,
+        float onsetStrength = 1.0f) noexcept;
 
     [[nodiscard]] int getNextPhraseIndex() const noexcept { return nextPhraseIndex; }
+    [[nodiscard]] int getCurrentChordEventIndex() const noexcept
+    {
+        return currentChordEventIndex;
+    }
     [[nodiscard]] double getSongTimeSeconds() const noexcept { return songTimeSeconds; }
     [[nodiscard]] bool isRunning() const noexcept { return running; }
+    [[nodiscard]] double getTempoScale() const noexcept { return tempoScale; }
+    [[nodiscard]] int getRecoveredSkippedChordCount() const noexcept
+    {
+        return recoveredSkippedChordCount;
+    }
 
 private:
-    [[nodiscard]] double normalizedStartTime(int phraseIndex) const noexcept;
-    int startNextPhrase() noexcept;
+    [[nodiscard]] double normalizedScoreStartTime(int phraseIndex) const noexcept;
+    [[nodiscard]] int firstPlayableChordEvent() const noexcept;
+    [[nodiscard]] int nextPlayableChordEvent(int afterIndex) const noexcept;
+    [[nodiscard]] int chooseChordEventForOnset(
+        float onsetStrength) const noexcept;
+    [[nodiscard]] double scoreBeatSeconds() const noexcept;
+    void updateTempoEstimate(int matchedEventIndex) noexcept;
+    int advanceChordCursor(
+        bool force,
+        float onsetStrength = 1.0f) noexcept;
+    int startDueGuitarPhrase() noexcept;
+    int startNextAutomaticPhrase() noexcept;
 
     const SongPackage* song = nullptr;
     double sampleRate = 48'000.0;
     double songTimeSeconds = 0.0;
-    double earlyWindowSeconds = 0.80;
     int nextPhraseIndex = 0;
+    int pendingDuePhraseIndex = -1;
+    int lastStartedPhraseIndex = -1;
+    double lastPhraseTriggerPerformanceSeconds = 0.0;
+    int nextChordEventIndex = -1;
+    int currentChordEventIndex = -1;
     bool running = false;
+    double secondsSinceChordMatch = 0.0;
+    double activeSecondsSinceChordMatch = 0.0;
+    double inactiveTailSeconds = 0.0;
+    double performanceTimeSeconds = 0.0;
+    double tempoScale = 1.0;
+    int tempoObservationCount = 0;
+    int tempoAnchorEventIndex = -1;
+    double tempoAnchorPerformanceSeconds = 0.0;
+    int recoveredSkippedChordCount = 0;
+    double guitarVocalLeadSeconds = 0.10;
 };
 
 } // namespace mode1

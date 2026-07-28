@@ -16,17 +16,24 @@ public:
 
     [[nodiscard]] float getCurrentRms() const noexcept { return currentRms; }
     [[nodiscard]] bool isActive() const noexcept { return currentRms >= activityThreshold; }
+    [[nodiscard]] float getLastOnsetStrength() const noexcept
+    {
+        return lastOnsetStrength;
+    }
 
 private:
     double sampleRate = 48'000.0;
     double samplesSinceOnset = 0.0;
     float energyBaseline = 1.0e-4f;
     float currentRms = 0.0f;
+    float previousRms = 0.0f;
+    float lastOnsetStrength = 1.0f;
 
     static constexpr float onsetRatio = 1.6f;
+    static constexpr float attackRiseRatio = 1.22f;
     static constexpr float minimumOnsetRms = 0.01f;
     static constexpr float activityThreshold = 0.003f;
-    static constexpr double refractorySeconds = 0.050;
+    static constexpr double refractorySeconds = 0.280;
 };
 
 } // namespace mode1

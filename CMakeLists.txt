@@ -229,3 +229,74 @@ target_link_libraries(WavSplitter
 if(MSVC)
     target_compile_options(WavSplitter PRIVATE /utf-8)
 endif()
+
+# --- Mode 1 offline guitar/replay renderer -----------------------------
+juce_add_console_app(Mode1OfflineRenderer
+    PRODUCT_NAME "Mode 1 Offline Renderer"
+)
+
+target_sources(Mode1OfflineRenderer PRIVATE
+    tools/mode1_offline_renderer/Main.cpp
+    src/mode1_vocal_follower/GuitarChordTracker.cpp
+    src/mode1_vocal_follower/GuitarOnsetTracker.cpp
+    src/mode1_vocal_follower/Mode1Controller.cpp
+    src/mode1_vocal_follower/PhrasePlayer.cpp
+    src/mode1_vocal_follower/PhraseScheduler.cpp
+    src/mode1_vocal_follower/SongPackage.cpp
+)
+
+target_include_directories(Mode1OfflineRenderer PRIVATE src)
+
+target_compile_definitions(Mode1OfflineRenderer
+    PRIVATE
+        JUCE_WEB_BROWSER=0
+        JUCE_USE_CURL=0
+)
+
+target_link_libraries(Mode1OfflineRenderer
+    PRIVATE
+        juce::juce_audio_formats
+        juce::juce_audio_utils
+        juce::juce_dsp
+    PUBLIC
+        juce::juce_recommended_config_flags
+        juce::juce_recommended_warning_flags
+)
+
+if(HAVE_SOUNDTOUCH)
+    target_link_libraries(Mode1OfflineRenderer PRIVATE SoundTouch)
+    target_compile_definitions(Mode1OfflineRenderer PRIVATE HAVE_SOUNDTOUCH=1)
+else()
+    target_compile_definitions(Mode1OfflineRenderer PRIVATE HAVE_SOUNDTOUCH=0)
+endif()
+
+if(MSVC)
+    target_compile_options(Mode1OfflineRenderer PRIVATE /utf-8)
+endif()
+
+# --- Generic audio decoder for timing-analysis fixtures ----------------
+juce_add_console_app(AudioToWav
+    PRODUCT_NAME "Audio To WAV"
+)
+
+target_sources(AudioToWav PRIVATE
+    tools/audio_to_wav/Main.cpp
+)
+
+target_compile_definitions(AudioToWav
+    PRIVATE
+        JUCE_WEB_BROWSER=0
+        JUCE_USE_CURL=0
+)
+
+target_link_libraries(AudioToWav
+    PRIVATE
+        juce::juce_audio_formats
+    PUBLIC
+        juce::juce_recommended_config_flags
+        juce::juce_recommended_warning_flags
+)
+
+if(MSVC)
+    target_compile_options(AudioToWav PRIVATE /utf-8)
+endif()

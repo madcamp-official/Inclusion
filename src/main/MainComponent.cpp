@@ -22,6 +22,9 @@ MainComponent::MainComponent()
             false, juce::dontSendNotification);
         automaticPlaybackButton.setButtonText(L"자동 연주 시작");
         setVirtualControlsEnabled(false);
+        guitarReplayActive.store(false);
+        guitarTestRecorder.stop();
+        refreshGuitarTestControls();
         statusLabel.setText(
             L"Mode 2는 이 작업공간에 아직 연결되지 않았습니다.",
             juce::dontSendNotification);
@@ -35,6 +38,33 @@ MainComponent::MainComponent()
     addAndMakeVisible(loadSongButton);
     addAndMakeVisible(nextPhraseButton);
 
+    startPerformanceButton.onClick =
+        [this] { startMode1Performance(false); };
+    restartPerformanceButton.onClick =
+        [this] { startMode1Performance(true); };
+    stopPerformanceButton.onClick =
+        [this] { stopMode1Performance(); };
+    startPerformanceButton.setEnabled(false);
+    restartPerformanceButton.setEnabled(false);
+    stopPerformanceButton.setEnabled(false);
+    addAndMakeVisible(startPerformanceButton);
+    addAndMakeVisible(restartPerformanceButton);
+    addAndMakeVisible(stopPerformanceButton);
+
+    guitarRecordStartButton.onClick =
+        [this] { startGuitarTestRecording(); };
+    guitarRecordStopButton.onClick =
+        [this] { stopGuitarTestRecording(); };
+    guitarReplayStartButton.onClick =
+        [this] { startGuitarTestReplay(); };
+    guitarReplayStopButton.onClick =
+        [this] { stopGuitarTestReplay(); };
+    addAndMakeVisible(guitarRecordStartButton);
+    addAndMakeVisible(guitarRecordStopButton);
+    addAndMakeVisible(guitarReplayStartButton);
+    addAndMakeVisible(guitarReplayStopButton);
+    refreshGuitarTestControls();
+
     audioSettingsButton.onClick = [this] { showAudioSettings(); };
     audioSettingsButton.setTooltip(
         L"오인페, 드라이버, 샘플레이트와 버퍼 크기를 설정합니다.");
@@ -43,11 +73,17 @@ MainComponent::MainComponent()
     guitarChannelSelector.setTextWhenNothingSelected("Guitar input channel");
     for (int channel = 0; channel < 8; ++channel)
         guitarChannelSelector.addItem("Guitar: Input " + juce::String(channel + 1), channel + 1);
-    guitarChannelSelector.setSelectedId(1, juce::dontSendNotification);
+    guitarChannelSelector.setSelectedId(2, juce::dontSendNotification);
     guitarChannelSelector.onChange = [this]
     {
         guitarChannelIndex.store(
             std::max(0, guitarChannelSelector.getSelectedId() - 1));
+        liveGuitarPeak.store(0.0f);
+        guitarStatusLabel.setText(
+            L"기타 입력 채널 "
+                + juce::String(guitarChannelSelector.getSelectedId())
+                + L" 선택됨 · 기타를 쳐서 입력 레벨을 확인하세요",
+            juce::dontSendNotification);
         grabKeyboardFocus();
     };
     addAndMakeVisible(guitarChannelSelector);
@@ -97,13 +133,11 @@ MainComponent::MainComponent()
             if (enabled)
                 mode1Controller.startAutomaticPlayback();
             else
-                mode1Controller.stopAutomaticPlayback();
+                mode1Controller.startPerformance();
         }
         automaticPlaybackButton.setButtonText(
             enabled ? L"자동 연주 정지" : L"자동 연주 시작");
-        for (auto& button : virtualChordButtons)
-            button.setEnabled(!enabled);
-        nextPhraseButton.setEnabled(!enabled);
+        refreshTransportControls();
         statusLabel.setText(
             enabled
                 ? L"자동 연주 중: 곡의 프레이즈 타이밍대로 재생합니다."
@@ -292,6 +326,7 @@ MainComponent::~MainComponent()
 {
     stopTimer();
     voiceRecorder.stop();
+    guitarTestRecorder.stop();
     shutdownAudio();
 }
 
@@ -302,7 +337,13 @@ void MainComponent::prepareToPlay(int samplesPerBlockExpected, double sampleRate
         static_cast<size_t>(std::max(1, samplesPerBlockExpected)),
         0.0f);
     mode1Controller.prepare(sampleRate, samplesPerBlockExpected);
+    if (auto* device = deviceManager.getCurrentAudioDevice())
+    {
+        mode1Controller.setOutputLatencySeconds(
+            device->getOutputLatencyInSamples() / sampleRate);
+    }
     voiceRecorder.prepare(sampleRate);
+    guitarTestRecorder.prepare(sampleRate);
     inputLevelCalibrator.prepare(sampleRate);
     guidedRecordingSession.prepare(sampleRate);
 }
@@ -368,14 +409,55 @@ void MainComponent::getNextAudioBlock(
         return;
     }
 
-    if (buffer.getNumChannels() > 0)
-    {
-        const int guitarChannel = juce::jlimit(
+    const int guitarChannel = buffer.getNumChannels() > 0
+        ? juce::jlimit(
             0,
             buffer.getNumChannels() - 1,
-            guitarChannelIndex.load());
+            guitarChannelIndex.load())
+        : 0;
+    if (guitarTestRecorder.isRecording() && buffer.getNumChannels() > 0)
+        guitarTestRecorder.processBlock(
+            buffer, guitarChannel, startSample, numSamples);
+
+    if (guitarReplayActive.load())
+    {
+        const int available =
+            guitarReplayAudio.getNumSamples() - guitarReplayPosition;
+        const int copied = std::max(0, std::min(numSamples, available));
+        if (copied > 0)
+            juce::FloatVectorOperations::copy(
+                guitarInputScratch.data(),
+                guitarReplayAudio.getReadPointer(0, guitarReplayPosition),
+                copied);
+        if (copied < numSamples)
+            std::fill(
+                guitarInputScratch.begin() + copied,
+                guitarInputScratch.begin() + numSamples,
+                0.0f);
+        guitarReplayPosition += copied;
+        if (guitarReplayPosition >= guitarReplayAudio.getNumSamples())
+        {
+            guitarReplayActive.store(false);
+            guitarReplayFinished.store(true);
+        }
+        const auto replayRange =
+            juce::FloatVectorOperations::findMinAndMax(
+                guitarInputScratch.data(), numSamples);
+        const float replayPeak = std::max(
+            std::abs(replayRange.getStart()),
+            std::abs(replayRange.getEnd()));
+        liveGuitarPeak.store(std::max(
+            replayPeak,
+            liveGuitarPeak.load() * 0.82f));
+    }
+    else if (buffer.getNumChannels() > 0)
+    {
         const auto* guitarInput =
             buffer.getReadPointer(guitarChannel, startSample);
+        const auto guitarPeak =
+            buffer.getMagnitude(guitarChannel, startSample, numSamples);
+        liveGuitarPeak.store(
+            juce::jmax(guitarPeak, liveGuitarPeak.load() * 0.82f));
         std::copy(
             guitarInput,
             guitarInput + numSamples,
@@ -409,6 +491,8 @@ void MainComponent::releaseResources()
 {
     mode1Controller.reset();
     voiceRecorder.stop();
+    guitarTestRecorder.stop();
+    guitarReplayActive.store(false);
     guidedRecordingSession.stop();
 }
 
@@ -474,10 +558,332 @@ void MainComponent::showAudioSettings()
 void MainComponent::setVirtualControlsEnabled(bool enabled)
 {
     automaticPlaybackButton.setEnabled(enabled);
+    startPerformanceButton.setEnabled(
+        enabled && !mode1Controller.isPerformanceRunning());
+    restartPerformanceButton.setEnabled(enabled);
+    stopPerformanceButton.setEnabled(
+        enabled && mode1Controller.isPerformanceRunning());
     const bool chordButtonsEnabled =
-        enabled && !automaticPlaybackButton.getToggleState();
+        enabled
+        && mode1Controller.isPerformanceRunning()
+        && !automaticPlaybackButton.getToggleState();
     for (auto& button : virtualChordButtons)
         button.setEnabled(chordButtonsEnabled);
+    nextPhraseButton.setEnabled(chordButtonsEnabled);
+}
+
+void MainComponent::refreshTransportControls()
+{
+    setVirtualControlsEnabled(
+        activeMode == ActiveMode::mode1
+        && mode1Controller.hasSong());
+}
+
+void MainComponent::startMode1Performance(bool restart)
+{
+    if (activeMode != ActiveMode::mode1 || !mode1Controller.hasSong())
+        return;
+
+    if (guitarReplayFinished.exchange(false))
+    {
+        {
+            const juce::ScopedLock callbackLock(
+                deviceManager.getAudioCallbackLock());
+            mode1Controller.stopPerformance();
+            guitarReplayPosition = 0;
+        }
+        lyricLabel.setText(
+            L"저장된 기타 입력 테스트 완료",
+            juce::dontSendNotification);
+        statusLabel.setText(
+            L"기타 WAV 테스트가 끝났습니다. 다시 재생할 수 있습니다.",
+            juce::dontSendNotification);
+        refreshTransportControls();
+    }
+    refreshGuitarTestControls();
+
+    {
+        const juce::ScopedLock callbackLock(
+            deviceManager.getAudioCallbackLock());
+        guitarReplayActive.store(false);
+        guitarReplayFinished.store(false);
+        guitarReplayPosition = 0;
+        if (restart)
+            mode1Controller.restartPerformance();
+        else
+            mode1Controller.startPerformance();
+    }
+    automaticPlaybackButton.setToggleState(
+        false, juce::dontSendNotification);
+    automaticPlaybackButton.setButtonText(L"자동 연주 시작");
+    lyricLabel.setText(
+        L"인트로 대기 · 악보 첫 코드부터 연주하세요",
+        juce::dontSendNotification);
+    statusLabel.setText(
+        restart
+            ? L"Mode 1 재시작: 처음부터 기타 입력을 기다립니다."
+            : L"Mode 1 시작: 처음부터 기타 입력을 기다립니다.",
+        juce::dontSendNotification);
+    refreshTransportControls();
+    refreshGuitarTestControls();
+    grabKeyboardFocus();
+}
+
+void MainComponent::stopMode1Performance()
+{
+    if (!mode1Controller.hasSong())
+        return;
+
+    {
+        const juce::ScopedLock callbackLock(
+            deviceManager.getAudioCallbackLock());
+        guitarReplayActive.store(false);
+        guitarReplayFinished.store(false);
+        guitarReplayPosition = 0;
+        mode1Controller.stopPerformance();
+    }
+    automaticPlaybackButton.setToggleState(
+        false, juce::dontSendNotification);
+    automaticPlaybackButton.setButtonText(L"자동 연주 시작");
+    lyricLabel.setText(
+        L"연주 중지됨 · 시작 또는 재시작을 누르세요",
+        juce::dontSendNotification);
+    statusLabel.setText(
+        L"Mode 1 중지: 기타 입력 레벨만 확인합니다.",
+        juce::dontSendNotification);
+    refreshTransportControls();
+    refreshGuitarTestControls();
+    grabKeyboardFocus();
+}
+
+juce::File MainComponent::getGuitarTestRecordingFile() const
+{
+    return findRepositoryRoot()
+        .getChildFile("output")
+        .getChildFile("audio")
+        .getChildFile("guitar_tests")
+        .getChildFile("bansanka_last_guitar_take.wav");
+}
+
+void MainComponent::refreshGuitarTestControls()
+{
+    const bool modeReady =
+        activeMode == ActiveMode::mode1 && mode1Controller.hasSong();
+    const bool recording = guitarTestRecorder.isRecording();
+    const bool replaying = guitarReplayActive.load();
+    const bool hasRecording =
+        guitarReplayAudio.getNumSamples() > 0
+        || getGuitarTestRecordingFile().existsAsFile();
+    guitarRecordStartButton.setEnabled(
+        modeReady && !recording && !replaying);
+    guitarRecordStopButton.setEnabled(modeReady && recording);
+    guitarReplayStartButton.setEnabled(
+        modeReady && hasRecording && !recording && !replaying);
+    guitarReplayStopButton.setEnabled(modeReady && replaying);
+}
+
+void MainComponent::startGuitarTestRecording()
+{
+    if (activeMode != ActiveMode::mode1
+        || !mode1Controller.hasSong()
+        || guitarTestRecorder.isRecording())
+        return;
+
+    {
+        const juce::ScopedLock callbackLock(
+            deviceManager.getAudioCallbackLock());
+        guitarReplayActive.store(false);
+        guitarReplayFinished.store(false);
+        mode1Controller.restartPerformance();
+    }
+    if (!guitarTestRecorder.start())
+    {
+        statusLabel.setText(
+            L"기타 테스트 녹음을 시작하지 못했습니다.",
+            juce::dontSendNotification);
+        return;
+    }
+
+    automaticPlaybackButton.setToggleState(
+        false, juce::dontSendNotification);
+    automaticPlaybackButton.setButtonText(L"자동 연주 시작");
+    lyricLabel.setText(
+        L"기타 입력 녹음 중 · 악보 처음부터 연주하세요",
+        juce::dontSendNotification);
+    statusLabel.setText(
+        L"기타 입력 녹음 중: Input "
+            + juce::String(guitarChannelIndex.load() + 1),
+        juce::dontSendNotification);
+    refreshTransportControls();
+    refreshGuitarTestControls();
+}
+
+void MainComponent::stopGuitarTestRecording()
+{
+    if (!guitarTestRecorder.isRecording())
+        return;
+
+    guitarTestRecorder.stop();
+    const auto destination = getGuitarTestRecordingFile();
+    if (destination.getParentDirectory().createDirectory().failed())
+    {
+        statusLabel.setText(
+            L"기타 테스트 녹음 폴더를 만들 수 없습니다.",
+            juce::dontSendNotification);
+        refreshGuitarTestControls();
+        return;
+    }
+
+    const auto result = guitarTestRecorder.saveAsWav(destination, false);
+    if (result.failed())
+    {
+        statusLabel.setText(
+            L"기타 테스트 WAV 저장 실패: "
+                + result.getErrorMessage(),
+            juce::dontSendNotification);
+        refreshGuitarTestControls();
+        return;
+    }
+
+    lastGuitarTestRecording = destination;
+    const bool loaded = loadGuitarTestReplay(destination);
+    statusLabel.setText(
+        loaded
+            ? L"기타 입력 저장 완료: " + destination.getFullPathName()
+            : L"WAV는 저장했지만 테스트 재생용 로드에 실패했습니다.",
+        juce::dontSendNotification);
+    lyricLabel.setText(
+        L"녹음으로 테스트를 누르면 같은 연주를 처음부터 재현합니다",
+        juce::dontSendNotification);
+    refreshGuitarTestControls();
+}
+
+bool MainComponent::loadGuitarTestReplay(const juce::File& file)
+{
+    if (!file.existsAsFile())
+        return false;
+
+    juce::AudioFormatManager formats;
+    formats.registerBasicFormats();
+    std::unique_ptr<juce::AudioFormatReader> reader(
+        formats.createReaderFor(file));
+    if (reader == nullptr || reader->lengthInSamples <= 0)
+        return false;
+
+    juce::AudioBuffer<float> source(
+        1, static_cast<int>(reader->lengthInSamples));
+    if (!reader->read(
+            &source,
+            0,
+            source.getNumSamples(),
+            0,
+            true,
+            true))
+        return false;
+
+    const double targetRate = std::max(1.0, currentSampleRate);
+    const double ratio = targetRate / reader->sampleRate;
+    const int outputSamples = std::max(
+        1,
+        juce::roundToInt(source.getNumSamples() * ratio));
+    juce::AudioBuffer<float> loaded(1, outputSamples);
+    if (std::abs(reader->sampleRate - targetRate) < 0.5)
+    {
+        loaded.copyFrom(0, 0, source, 0, 0, outputSamples);
+    }
+    else
+    {
+        const double inputStep = reader->sampleRate / targetRate;
+        const auto* input = source.getReadPointer(0);
+        auto* output = loaded.getWritePointer(0);
+        for (int sample = 0; sample < outputSamples; ++sample)
+        {
+            const double position = sample * inputStep;
+            const int index = juce::jlimit(
+                0,
+                source.getNumSamples() - 1,
+                static_cast<int>(position));
+            const int next =
+                std::min(index + 1, source.getNumSamples() - 1);
+            const float fraction =
+                static_cast<float>(position - index);
+            output[sample] =
+                input[index] + fraction * (input[next] - input[index]);
+        }
+    }
+
+    const juce::ScopedLock callbackLock(
+        deviceManager.getAudioCallbackLock());
+    guitarReplayActive.store(false);
+    guitarReplayPosition = 0;
+    guitarReplayAudio = std::move(loaded);
+    return true;
+}
+
+void MainComponent::startGuitarTestReplay()
+{
+    if (activeMode != ActiveMode::mode1
+        || !mode1Controller.hasSong()
+        || guitarTestRecorder.isRecording())
+        return;
+
+    if (guitarReplayAudio.getNumSamples() == 0)
+    {
+        const auto file = getGuitarTestRecordingFile();
+        if (!loadGuitarTestReplay(file))
+        {
+            statusLabel.setText(
+                L"재생할 기타 테스트 녹음이 없습니다.",
+                juce::dontSendNotification);
+            refreshGuitarTestControls();
+            return;
+        }
+        lastGuitarTestRecording = file;
+    }
+
+    {
+        const juce::ScopedLock callbackLock(
+            deviceManager.getAudioCallbackLock());
+        guitarReplayPosition = 0;
+        guitarReplayFinished.store(false);
+        guitarReplayActive.store(true);
+        mode1Controller.restartPerformance();
+    }
+    automaticPlaybackButton.setToggleState(
+        false, juce::dontSendNotification);
+    automaticPlaybackButton.setButtonText(L"자동 연주 시작");
+    lyricLabel.setText(
+        L"저장된 기타 입력으로 Mode 1 테스트 중",
+        juce::dontSendNotification);
+    statusLabel.setText(
+        L"가상 기타 입력 재생: "
+            + (
+                lastGuitarTestRecording.existsAsFile()
+                    ? lastGuitarTestRecording.getFileName()
+                    : juce::String("bansanka_last_guitar_take.wav")),
+        juce::dontSendNotification);
+    refreshTransportControls();
+    refreshGuitarTestControls();
+}
+
+void MainComponent::stopGuitarTestReplay()
+{
+    {
+        const juce::ScopedLock callbackLock(
+            deviceManager.getAudioCallbackLock());
+        guitarReplayActive.store(false);
+        guitarReplayFinished.store(false);
+        guitarReplayPosition = 0;
+        mode1Controller.stopPerformance();
+    }
+    lyricLabel.setText(
+        L"기타 녹음 테스트 중지됨",
+        juce::dontSendNotification);
+    statusLabel.setText(
+        L"저장된 기타 입력 테스트를 중지했습니다.",
+        juce::dontSendNotification);
+    refreshTransportControls();
+    refreshGuitarTestControls();
 }
 
 void MainComponent::selectMode1()
@@ -512,6 +918,7 @@ void MainComponent::selectMode1()
             loadSongPackage(developmentPackage);
     }
     setVirtualControlsEnabled(mode1Controller.hasSong());
+    refreshGuitarTestControls();
 
     grabKeyboardFocus();
 }
@@ -543,7 +950,7 @@ bool MainComponent::loadSongPackage(const juce::File& file)
         nextPhraseButton.setEnabled(false);
         return false;
     }
-    mode1Controller.stopAutomaticPlayback();
+    mode1Controller.stopPerformance();
     automaticPlaybackButton.setToggleState(
         false, juce::dontSendNotification);
     automaticPlaybackButton.setButtonText(L"자동 연주 시작");
@@ -573,12 +980,14 @@ bool MainComponent::loadSongPackage(const juce::File& file)
                 ? L"  [주의] " + mode1Controller.getRangeWarning()
                 : L""),
         juce::dontSendNotification);
-    lyricLabel.setText(L"기타를 치거나 Space를 눌러 시작", juce::dontSendNotification);
+    lyricLabel.setText(
+        L"시작 버튼을 누른 뒤 악보 첫 코드부터 연주하세요",
+        juce::dontSendNotification);
     statusLabel.setText(
         L"Mode 1 준비 완료: " + file.getFullPathName(),
         juce::dontSendNotification);
-    nextPhraseButton.setEnabled(true);
-    setVirtualControlsEnabled(true);
+    refreshTransportControls();
+    refreshGuitarTestControls();
     grabKeyboardFocus();
     return true;
 }
@@ -663,7 +1072,9 @@ void MainComponent::startVoiceModelTraining()
 
 void MainComponent::triggerNextPhrase()
 {
-    if (activeMode == ActiveMode::mode1 && mode1Controller.hasSong())
+    if (activeMode == ActiveMode::mode1
+        && mode1Controller.hasSong()
+        && mode1Controller.isPerformanceRunning())
         mode1Controller.triggerNextPhrase();
     grabKeyboardFocus();
 }
@@ -752,7 +1163,10 @@ void MainComponent::startGuidedRecordingSession()
         false, juce::dontSendNotification);
     automaticPlaybackButton.setButtonText(L"자동 연주 시작");
     setVirtualControlsEnabled(false);
+    guitarTestRecorder.stop();
+    guitarReplayActive.store(false);
     activeMode = ActiveMode::idle;
+    refreshGuitarTestControls();
 
     lastReferenceFile = {};
     guidedStatusMessage = {};
@@ -1045,12 +1459,34 @@ void MainComponent::timerCallback()
     const auto rmsDb = juce::Decibels::gainToDecibels(
         mode1Controller.getGuitarRms(),
         -100.0f);
+    const auto rawInputDb = juce::Decibels::gainToDecibels(
+        liveGuitarPeak.load(),
+        -100.0f);
     guitarStatusLabel.setText(
-        juce::String(mode1Controller.isGuitarActive() ? L"기타 입력 감지" : L"기타 입력 대기")
+        (
+            guitarReplayActive.load()
+                ? juce::String(L"WAV 테스트 입력")
+                : L"Input " + juce::String(guitarChannelIndex.load() + 1))
+            + L" · " + juce::String(rawInputDb, 1) + L" dBFS · "
+            + juce::String(mode1Controller.isGuitarActive()
+                ? L"기타 입력 감지"
+                : L"기타 입력 대기")
             + "  RMS " + juce::String(rmsDb, 1) + " dBFS"
-            + L"  코드 " + mode1Controller.getDetectedChordName()
+            + L"  가이드 코드 " + mode1Controller.getDetectedChordName()
+            + L"  (입력 추정 "
+            + mode1Controller.getRawDetectedChordName() + ")"
             + L"  보컬 " + (mode1Controller.getPitchShiftSemitones() >= 0 ? L"+" : L"")
             + juce::String(mode1Controller.getPitchShiftSemitones()) + " st"
+            + L"  템포 x"
+            + juce::String(
+                mode1Controller.getPerformanceTempoScale(), 2)
+            + (
+                mode1Controller.getRecoveredSkippedChordCount() > 0
+                    ? L"  재동기화 "
+                        + juce::String(
+                            mode1Controller
+                                .getRecoveredSkippedChordCount())
+                    : juce::String())
             + (mode1Controller.consumedOnset() ? "  [ONSET]" : ""),
         juce::dontSendNotification);
 }
@@ -1075,8 +1511,29 @@ void MainComponent::resized()
     area.removeFromTop(14);
 
     auto songRow = area.removeFromTop(42);
-    loadSongButton.setBounds(songRow.removeFromLeft(190).reduced(4, 0));
-    nextPhraseButton.setBounds(songRow.reduced(4, 0));
+    loadSongButton.setBounds(songRow.removeFromLeft(260).reduced(4, 0));
+    area.removeFromTop(6);
+
+    auto transportRow = area.removeFromTop(40);
+    const int transportButtonWidth = transportRow.getWidth() / 4;
+    startPerformanceButton.setBounds(
+        transportRow.removeFromLeft(transportButtonWidth).reduced(4, 0));
+    restartPerformanceButton.setBounds(
+        transportRow.removeFromLeft(transportButtonWidth).reduced(4, 0));
+    stopPerformanceButton.setBounds(
+        transportRow.removeFromLeft(transportButtonWidth).reduced(4, 0));
+    nextPhraseButton.setBounds(transportRow.reduced(4, 0));
+    area.removeFromTop(5);
+
+    auto guitarTestRow = area.removeFromTop(36);
+    const int guitarTestButtonWidth = guitarTestRow.getWidth() / 4;
+    guitarRecordStartButton.setBounds(
+        guitarTestRow.removeFromLeft(guitarTestButtonWidth).reduced(4, 0));
+    guitarRecordStopButton.setBounds(
+        guitarTestRow.removeFromLeft(guitarTestButtonWidth).reduced(4, 0));
+    guitarReplayStartButton.setBounds(
+        guitarTestRow.removeFromLeft(guitarTestButtonWidth).reduced(4, 0));
+    guitarReplayStopButton.setBounds(guitarTestRow.reduced(4, 0));
     area.removeFromTop(8);
 
     songLabel.setBounds(area.removeFromTop(30));

@@ -11,6 +11,7 @@
 #include <iostream>
 #include <cmath>
 #include <memory>
+#include <numeric>
 #include <vector>
 
 namespace
@@ -68,13 +69,22 @@ juce::File createFixturePackage()
       { "type": "above_comfortable_range", "semitones": 1.0 }
     ]
   },
+  "chord_timeline": [
+    { "start_sec": 0.0, "chord": "C", "raw_chord": "C" },
+    { "start_sec": 0.5, "chord": "F", "raw_chord": "F" },
+    { "start_sec": 1.0, "chord": "G", "raw_chord": "G" },
+    { "start_sec": 1.5, "chord": "C", "raw_chord": "C" },
+    { "start_sec": 2.0, "chord": "C", "raw_chord": "C" },
+    { "start_sec": 2.5, "chord": "F", "raw_chord": "F" },
+    { "start_sec": 3.0, "chord": "G", "raw_chord": "G" }
+  ],
   "micro_phrases": [
     {
       "phrase_id": "micro_000",
       "lyrics": "君",
-      "score": { "start_sec": 0.0, "end_sec": 0.45 },
-      "source": { "start_sec": 0.0, "end_sec": 0.45 },
-      "chords": [{ "start_sec": 0.0, "chord": "C", "raw_chord": "C" }],
+      "score": { "start_sec": 2.0, "end_sec": 2.45 },
+      "source": { "start_sec": 2.0, "end_sec": 2.45 },
+      "chords": [{ "start_sec": 2.0, "chord": "C", "raw_chord": "C" }],
       "vocal": { "directory": ".", "file": "tone.wav", "content_offset_sec": 0.0 },
       "vocal_key_variants": {
         "0": {
@@ -85,9 +95,9 @@ juce::File createFixturePackage()
     {
       "phrase_id": "micro_001",
       "lyrics": "を",
-      "score": { "start_sec": 0.5, "end_sec": 0.95 },
-      "source": { "start_sec": 0.5, "end_sec": 0.95 },
-      "chords": [{ "start_sec": 0.5, "chord": "F", "raw_chord": "F" }],
+      "score": { "start_sec": 2.5, "end_sec": 2.95 },
+      "source": { "start_sec": 2.5, "end_sec": 2.95 },
+      "chords": [{ "start_sec": 2.5, "chord": "F", "raw_chord": "F" }],
       "vocal": { "directory": ".", "file": "tone.wav", "content_offset_sec": 0.0 },
       "vocal_key_variants": {
         "0": {
@@ -98,9 +108,9 @@ juce::File createFixturePackage()
     {
       "phrase_id": "micro_002",
       "lyrics": "歌",
-      "score": { "start_sec": 1.0, "end_sec": 1.45 },
-      "source": { "start_sec": 1.0, "end_sec": 1.45 },
-      "chords": [{ "start_sec": 1.0, "chord": "G", "raw_chord": "G" }],
+      "score": { "start_sec": 3.0, "end_sec": 3.45 },
+      "source": { "start_sec": 3.0, "end_sec": 3.45 },
+      "chords": [{ "start_sec": 3.0, "chord": "G", "raw_chord": "G" }],
       "vocal": { "directory": ".", "file": "tone.wav", "content_offset_sec": 0.0 },
       "vocal_key_variants": {
         "0": {
@@ -148,19 +158,45 @@ int main(int argc, char* argv[])
     mode1::PhraseScheduler scheduler;
     scheduler.prepare(48'000.0);
     scheduler.setSong(&package);
+    for (int introChord = 0; introChord < 4; ++introChord)
+        passed &= require(
+            scheduler.processBlock(512, false, true) == -1,
+            "intro chords must not trigger vocals");
     passed &= require(
         scheduler.processBlock(512, false, true) == 0,
-        "manual start should trigger phrase zero");
+        "the first vocal chord should trigger phrase zero");
     passed &= require(
-        scheduler.processBlock(512, false, true) == 1,
-        "second manual trigger should advance to phrase one");
+        scheduler.processBlock(512, false, true) == -1,
+        "an early chord must not compress the source vocal interval");
+    int preservedGapResult = -1;
+    for (int block = 0; block < 60 && preservedGapResult < 0; ++block)
+        preservedGapResult =
+            scheduler.processBlock(512, false, false);
+    passed &= require(
+        preservedGapResult == 1,
+        "the next phrase should start after its preserved source interval");
 
     mode1::PhraseScheduler guitarDrivenScheduler;
     guitarDrivenScheduler.prepare(48'000.0);
     guitarDrivenScheduler.setSong(&package);
+    for (int introChord = 0; introChord < 4; ++introChord)
+    {
+        passed &= require(
+            guitarDrivenScheduler.processBlock(512, true, false) == -1,
+            "guitar intro must remain a vocal rest");
+        const int heldChordIndex =
+            guitarDrivenScheduler.getCurrentChordEventIndex();
+        passed &= require(
+            guitarDrivenScheduler.processBlock(512, true, false) == -1
+                && guitarDrivenScheduler.getCurrentChordEventIndex()
+                    == heldChordIndex,
+            "an early repeated strum on a held chord must not advance");
+        for (int waitBlock = 0; waitBlock < 47; ++waitBlock)
+            guitarDrivenScheduler.processBlock(512, false, false);
+    }
     passed &= require(
-        guitarDrivenScheduler.processBlock(512, false, true) == 0,
-        "guitar-driven scheduler should start phrase zero");
+        guitarDrivenScheduler.processBlock(512, true, false) == 0,
+        "guitar-driven scheduler should start at the first vocal chord");
     const double nextTargetSeconds =
         package.getPhrases()[1].scoreStartSeconds
         - package.getPhrases()[0].scoreStartSeconds;
@@ -180,6 +216,122 @@ int main(int argc, char* argv[])
     passed &= require(
         guitarDrivenScheduler.processBlock(512, true, false) == 1,
         "a late guitar onset should advance the waiting phrase");
+
+    mode1::PhraseScheduler adaptiveTempoScheduler;
+    adaptiveTempoScheduler.prepare(48'000.0);
+    adaptiveTempoScheduler.setSong(&package);
+    passed &= require(
+        adaptiveTempoScheduler.processBlock(
+            480, true, false, false, true) == -1,
+        "the first score event should arm adaptive tracking");
+    int adaptivePhrase = -1;
+    for (int event = 1; event <= 4; ++event)
+    {
+        // The fixture score changes every 500 ms, while this simulated
+        // performance changes every 400 ms (125% tempo).
+        for (int block = 0; block < 39; ++block)
+            adaptiveTempoScheduler.processBlock(
+                480, false, false, false, true);
+        adaptivePhrase = adaptiveTempoScheduler.processBlock(
+            480, true, false, false, true);
+    }
+    passed &= require(
+        adaptiveTempoScheduler.getTempoScale() > 1.10,
+        "score follower did not adapt to a faster performance");
+    passed &= require(
+        adaptivePhrase == 0,
+        "first vocal should start on the score anchor at an adapted tempo");
+
+    mode1::PhraseScheduler subdivisionScheduler;
+    subdivisionScheduler.prepare(48'000.0);
+    subdivisionScheduler.setSong(&package);
+    subdivisionScheduler.processBlock(
+        480, true, false, false, true);
+    int subdivisionPhrase = -1;
+    for (int event = 1; event <= 4; ++event)
+    {
+        for (int block = 0; block < 24; ++block)
+            subdivisionScheduler.processBlock(
+                480, false, false, false, true);
+        subdivisionPhrase = subdivisionScheduler.processBlock(
+            480, true, false, false, true, 5.0f);
+        passed &= require(
+            subdivisionScheduler.getCurrentChordEventIndex() == event - 1,
+            "a half-beat subdivision must not advance the score cursor");
+
+        for (int block = 0; block < 24; ++block)
+            subdivisionScheduler.processBlock(
+                480, false, false, false, true);
+        subdivisionPhrase = subdivisionScheduler.processBlock(
+            480, true, false, false, true);
+    }
+    passed &= require(
+        subdivisionScheduler.getCurrentChordEventIndex() == 4
+            && subdivisionPhrase == 0,
+        "subdivision strums must not start vocals before the score anchor");
+
+    mode1::PhraseScheduler slowerTempoScheduler;
+    slowerTempoScheduler.prepare(48'000.0);
+    slowerTempoScheduler.setSong(&package);
+    slowerTempoScheduler.processBlock(
+        480, true, false, false, true);
+    int slowerPhrase = -1;
+    for (int event = 1; event <= 4; ++event)
+    {
+        for (int block = 0; block < 62; ++block)
+            slowerTempoScheduler.processBlock(
+                480, false, false, false, true);
+        slowerPhrase = slowerTempoScheduler.processBlock(
+            480, true, false, false, true);
+    }
+    passed &= require(
+        slowerTempoScheduler.getTempoScale() < 0.92,
+        "score follower did not adapt to a slower performance");
+    passed &= require(
+        slowerPhrase == 0,
+        "slower playing should still start vocals at the score anchor");
+
+    const int heldAdaptiveEvent =
+        adaptiveTempoScheduler.getCurrentChordEventIndex();
+    for (int block = 0; block < 9; ++block)
+        adaptiveTempoScheduler.processBlock(
+            480, false, false, false, true);
+    adaptiveTempoScheduler.processBlock(
+        480, true, false, false, true);
+    passed &= require(
+        adaptiveTempoScheduler.getCurrentChordEventIndex()
+            == heldAdaptiveEvent,
+        "an extra subdivision strum must not move the score cursor");
+
+    mode1::PhraseScheduler recoveryScheduler;
+    recoveryScheduler.prepare(48'000.0);
+    recoveryScheduler.setSong(&package);
+    recoveryScheduler.processBlock(480, true, false, false, true);
+    for (int block = 0; block < 49; ++block)
+        recoveryScheduler.processBlock(
+            480, false, false, false, true);
+    recoveryScheduler.processBlock(480, true, false, false, true);
+    for (int block = 0; block < 99; ++block)
+        recoveryScheduler.processBlock(
+            480, false, false, false, true);
+    recoveryScheduler.processBlock(480, true, false, false, true);
+    passed &= require(
+        recoveryScheduler.getCurrentChordEventIndex() == 3
+            && recoveryScheduler.getRecoveredSkippedChordCount() == 1,
+        "continuous playing should recover across one missed chord event");
+
+    mode1::PhraseScheduler pausedScheduler;
+    pausedScheduler.prepare(48'000.0);
+    pausedScheduler.setSong(&package);
+    pausedScheduler.processBlock(480, true, false, false, true);
+    for (int block = 0; block < 99; ++block)
+        pausedScheduler.processBlock(
+            480, false, false, false, false);
+    pausedScheduler.processBlock(480, true, false, false, true);
+    passed &= require(
+        pausedScheduler.getCurrentChordEventIndex() == 1
+            && pausedScheduler.getRecoveredSkippedChordCount() == 0,
+        "a real performance pause must resume without skipping the score");
 
     mode1::PhraseScheduler automaticScheduler;
     automaticScheduler.prepare(48'000.0);
@@ -206,6 +358,35 @@ int main(int argc, char* argv[])
     passed &= require(
         phrasePlayer.load(package, error),
         error.toRawUTF8());
+    mode1::PhrasePlayer latencyPlayer;
+    latencyPlayer.prepare(48'000.0, 512);
+    passed &= require(
+        latencyPlayer.load(package, error),
+        error.toRawUTF8());
+    latencyPlayer.requestPhrase(0);
+    int firstAudibleBlock = -1;
+    std::vector<float> latencyLeft(512);
+    std::vector<float> latencyRight(512);
+    for (int block = 0; block < 40 && firstAudibleBlock < 0; ++block)
+    {
+        latencyPlayer.processBlock(
+            latencyLeft.data(), latencyRight.data(), 512);
+        const double energy = std::inner_product(
+            latencyLeft.begin(),
+            latencyLeft.end(),
+            latencyLeft.begin(),
+            0.0);
+        if (energy > 1.0e-8)
+            firstAudibleBlock = block;
+    }
+    const double measuredPlaybackLatencySeconds =
+        std::max(0, firstAudibleBlock) * 512.0 / 48'000.0;
+    std::cout << "PhrasePlayer first-audio latency: "
+              << measuredPlaybackLatencySeconds * 1000.0 << " ms\n";
+    passed &= require(
+        firstAudibleBlock >= 0
+            && measuredPlaybackLatencySeconds <= 0.20,
+        "phrase player latency exceeded 200 ms");
     phrasePlayer.requestPhrase(0);
     std::vector<float> crossfadeLeft(512);
     std::vector<float> crossfadeRight(512);
@@ -242,6 +423,20 @@ int main(int argc, char* argv[])
             attack.data(),
             static_cast<int>(attack.size())),
         "a clear attack should trigger an onset");
+    passed &= require(
+        onsetTracker.getLastOnsetStrength() >= 3.0f,
+        "onset tracker should expose a strong relative attack");
+    for (int ringingBlock = 0; ringingBlock < 40; ++ringingBlock)
+    {
+        const float level =
+            0.07f * std::exp(-0.05f * static_cast<float>(ringingBlock));
+        std::vector<float> ringing(512, level);
+        passed &= require(
+            !onsetTracker.processBlock(
+                ringing.data(),
+                static_cast<int>(ringing.size())),
+            "one decaying strum must not retrigger multiple onsets");
+    }
 
     mode1::GuitarChordTracker chordTracker;
     chordTracker.prepare(48'000.0);
@@ -281,6 +476,84 @@ int main(int argc, char* argv[])
         lastChordDetection.valid && lastChordDetection.rootPitchClass == 0,
         "C major triad was not detected as a C-root chord");
 
+    const auto detectSyntheticChord =
+        [](const std::vector<double>& frequencies)
+    {
+        mode1::GuitarChordTracker tracker;
+        tracker.prepare(48'000.0);
+        mode1::ChordDetection result;
+        std::vector<double> phases(frequencies.size(), 0.0);
+        for (int block = 0; block < 16; ++block)
+        {
+            std::vector<float> samples(512, 0.0f);
+            for (int sample = 0; sample < 512; ++sample)
+                for (size_t tone = 0; tone < frequencies.size(); ++tone)
+                {
+                    phases[tone] +=
+                        juce::MathConstants<double>::twoPi
+                        * frequencies[tone] / 48'000.0;
+                    samples[static_cast<size_t>(sample)] +=
+                        static_cast<float>(
+                            0.045 * std::sin(phases[tone]));
+                }
+            mode1::ChordDetection candidate;
+            if (tracker.processBlock(
+                    samples.data(),
+                    static_cast<int>(samples.size()),
+                    block == 0,
+                    candidate))
+                result = candidate;
+        }
+        return result;
+    };
+
+    const auto cMinor = detectSyntheticChord({ 130.813, 155.563, 195.998 });
+    passed &= require(
+        cMinor.valid
+            && cMinor.rootPitchClass == 0
+            && cMinor.quality == mode1::ChordQuality::minor,
+        "C minor quality was not detected");
+    const auto cDiminished =
+        detectSyntheticChord({ 130.813, 155.563, 184.997 });
+    passed &= require(
+        cDiminished.valid
+            && cDiminished.rootPitchClass == 0
+            && cDiminished.quality == mode1::ChordQuality::diminished,
+        "C diminished quality was not detected");
+    const auto cSus4 = detectSyntheticChord({ 130.813, 174.614, 195.998 });
+    passed &= require(
+        cSus4.valid
+            && cSus4.rootPitchClass == 0
+            && cSus4.quality == mode1::ChordQuality::suspended4,
+        "C sus4 quality was not detected");
+    const auto cDominant7 =
+        detectSyntheticChord({ 130.813, 164.814, 195.998, 233.082 });
+    std::cout << "Chord qualities: Cm="
+              << cMinor.rootPitchClass << "/"
+              << static_cast<int>(cMinor.quality)
+              << " Cdim=" << cDiminished.rootPitchClass << "/"
+              << static_cast<int>(cDiminished.quality)
+              << " Csus4=" << cSus4.rootPitchClass << "/"
+              << static_cast<int>(cSus4.quality)
+              << " C7=" << cDominant7.rootPitchClass << "/"
+              << static_cast<int>(cDominant7.quality) << '\n';
+    passed &= require(
+        cDominant7.valid
+            && cDominant7.rootPitchClass == 0
+            && cDominant7.quality == mode1::ChordQuality::dominant7,
+        "C dominant seventh quality was not detected");
+    const auto cMajorOverE =
+        detectSyntheticChord({ 164.814, 261.626, 329.628, 391.995 });
+    std::cout << "C/E detection: root=" << cMajorOverE.rootPitchClass
+              << " bass=" << cMajorOverE.bassPitchClass
+              << " quality=" << static_cast<int>(cMajorOverE.quality)
+              << '\n';
+    passed &= require(
+        cMajorOverE.valid
+            && cMajorOverE.rootPitchClass == 0
+            && cMajorOverE.bassPitchClass == 4,
+        "C/E slash-chord bass was not detected");
+
     mode1::Mode1Controller controller;
     controller.prepare(48'000.0, 512);
     const double packageLoadStart = juce::Time::getMillisecondCounterHiRes();
@@ -290,13 +563,45 @@ int main(int argc, char* argv[])
     std::cout << "Controller package load: "
               << juce::Time::getMillisecondCounterHiRes() - packageLoadStart
               << " ms\n";
-    controller.triggerNextPhrase();
+    passed &= require(
+        !controller.isPerformanceRunning(),
+        "a loaded song should remain stopped until Start is pressed");
+    controller.startPerformance();
+    passed &= require(
+        controller.isPerformanceRunning(),
+        "Start should arm guitar-follow playback");
+    controller.stopPerformance();
+    passed &= require(
+        !controller.isPerformanceRunning(),
+        "Stop should disarm playback");
+    controller.restartPerformance();
+    passed &= require(
+        controller.isPerformanceRunning()
+            && controller.getCurrentPhraseIndex() < 0,
+        "Restart should return to the beginning and arm playback");
+    controller.startAutomaticPlayback();
     controller.setManualKeyShift(3);
     passed &= require(
         controller.getSelectedKeyAnchor()
                 + controller.getPitchShiftSemitones()
             == controller.getEffectiveBaseKeyShift(),
         "anchor plus residual pitch should equal the requested key");
+    controller.stopAutomaticPlayback();
+    std::vector<float> boundedPitchLeft(512);
+    std::vector<float> boundedPitchRight(512);
+    for (const int simulatedRoot : { 5, 5, 10 })
+    {
+        controller.triggerVirtualChord(simulatedRoot);
+        controller.triggerNextPhrase();
+        controller.processBlock(
+            silence.data(),
+            boundedPitchLeft.data(),
+            boundedPitchRight.data(),
+            static_cast<int>(silence.size()));
+    }
+    passed &= require(
+        controller.getPitchShiftSemitones() == 3,
+        "raw chord misclassification must not push vocal pitch past +3 st");
     const double anchorLoadStart = juce::Time::getMillisecondCounterHiRes();
     controller.setManualKeyShift(17);
     std::cout << "Original-key anchor load: "
@@ -322,6 +627,7 @@ int main(int argc, char* argv[])
                     && controller.getResidualKeyShift() == 0
                     && controller.getPitchShiftSemitones() == 0)),
         "original-key anchor should avoid a +17 real-time pitch shift");
+    controller.startAutomaticPlayback();
 
     std::vector<float> outputLeft(512);
     std::vector<float> outputRight(512);

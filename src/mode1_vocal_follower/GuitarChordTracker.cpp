@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <numeric>
+#include <vector>
 
 namespace mode1
 {
@@ -65,6 +67,7 @@ ChordDetection GuitarChordTracker::analyse() noexcept
     fft.performFrequencyOnlyForwardTransform(fftData.data());
 
     std::array<float, 12> chroma {};
+    std::array<float, 128> midiEnergy {};
     const int firstBin = std::max(
         1,
         static_cast<int>(70.0 * fftSize / sampleRate));
@@ -79,8 +82,10 @@ ChordDetection GuitarChordTracker::analyse() noexcept
         const int roundedMidi = juce::roundToInt(midi);
         const int pitchClass = ((roundedMidi % 12) + 12) % 12;
         const float magnitude =
-            std::sqrt(std::max(0.0f, fftData[static_cast<size_t>(bin)]));
+            std::max(0.0f, fftData[static_cast<size_t>(bin)]);
         chroma[static_cast<size_t>(pitchClass)] += magnitude;
+        if (roundedMidi >= 36 && roundedMidi < 128 && frequency <= 360.0)
+            midiEnergy[static_cast<size_t>(roundedMidi)] += magnitude;
     }
 
     const float total =
@@ -90,29 +95,92 @@ ChordDetection GuitarChordTracker::analyse() noexcept
     for (auto& value : chroma)
         value /= total;
 
+    float strongestBass = 0.0f;
+    for (int midi = 36; midi <= 66; ++midi)
+        strongestBass = std::max(
+            strongestBass, midiEnergy[static_cast<size_t>(midi)]);
+    int bassPitchClass = -1;
+    if (strongestBass > 0.0f)
+    {
+        for (int midi = 36; midi <= 66; ++midi)
+        {
+            const float energy = midiEnergy[static_cast<size_t>(midi)];
+            const float lower =
+                midiEnergy[static_cast<size_t>(midi - 1)];
+            const float upper =
+                midiEnergy[static_cast<size_t>(midi + 1)];
+            if (energy >= strongestBass * 0.35f
+                && energy >= lower
+                && energy >= upper)
+            {
+                bassPitchClass = midi % 12;
+                break;
+            }
+        }
+    }
+
+    struct Template
+    {
+        ChordQuality quality;
+        std::array<int, 4> intervals;
+        int toneCount;
+    };
+    static constexpr std::array<Template, 8> templates {{
+        { ChordQuality::major,      { 0, 4, 7, 0 }, 3 },
+        { ChordQuality::minor,      { 0, 3, 7, 0 }, 3 },
+        { ChordQuality::diminished, { 0, 3, 6, 0 }, 3 },
+        { ChordQuality::suspended2, { 0, 2, 7, 0 }, 3 },
+        { ChordQuality::suspended4, { 0, 5, 7, 0 }, 3 },
+        { ChordQuality::dominant7,  { 0, 4, 7, 10 }, 4 },
+        { ChordQuality::major7,     { 0, 4, 7, 11 }, 4 },
+        { ChordQuality::minor7,     { 0, 3, 7, 10 }, 4 },
+    }};
+    static constexpr std::array<float, 4> toneWeights {
+        1.0f, 0.92f, 0.82f, 0.72f,
+    };
+
     float bestScore = -1.0f;
     float secondScore = -1.0f;
     int bestRoot = 0;
-    bool bestMinor = false;
+    ChordQuality bestQuality = ChordQuality::unknown;
+    const float chromaNorm = std::sqrt(std::inner_product(
+        chroma.begin(), chroma.end(), chroma.begin(), 0.0f));
 
     for (int root = 0; root < 12; ++root)
     {
-        for (bool minor : { false, true })
+        for (const auto& candidate : templates)
         {
-            const int third = (root + (minor ? 3 : 4)) % 12;
-            const int fifth = (root + 7) % 12;
-            const float chordEnergy =
-                chroma[static_cast<size_t>(root)]
-                + 0.85f * chroma[static_cast<size_t>(third)]
-                + 0.90f * chroma[static_cast<size_t>(fifth)];
-            const float score = chordEnergy;
+            float dot = 0.0f;
+            float templateNormSquared = 0.0f;
+            float weakestTone = 1.0f;
+            for (int tone = 0; tone < candidate.toneCount; ++tone)
+            {
+                const float weight = toneWeights[static_cast<size_t>(tone)];
+                const float energy = chroma[static_cast<size_t>(
+                    (root + candidate.intervals[static_cast<size_t>(tone)]) % 12)];
+                dot += weight * energy;
+                templateNormSquared += weight * weight;
+                weakestTone = std::min(weakestTone, energy);
+            }
+
+            // Cosine similarity keeps seventh templates from winning over a
+            // plain triad when the seventh is absent. A small coverage bonus
+            // breaks close guitar-voicing ties in favour of fully present
+            // chord tones.
+            const float score =
+                dot / std::max(
+                    1.0e-6f,
+                    chromaNorm * std::sqrt(templateNormSquared))
+                + 0.10f * weakestTone
+                + 0.25f * chroma[static_cast<size_t>(root)]
+                + (root == bassPitchClass ? 0.035f : 0.0f);
 
             if (score > bestScore)
             {
                 secondScore = bestScore;
                 bestScore = score;
                 bestRoot = root;
-                bestMinor = minor;
+                bestQuality = candidate.quality;
             }
             else if (score > secondScore)
             {
@@ -123,12 +191,20 @@ ChordDetection GuitarChordTracker::analyse() noexcept
 
     const float confidence =
         bestScore > 0.0f ? (bestScore - secondScore) / bestScore : 0.0f;
-    return {
-        true,
-        bestRoot,
-        bestMinor,
-        confidence,
-    };
+
+    if (bassPitchClass < 0)
+        bassPitchClass = bestRoot;
+
+    ChordDetection detection;
+    detection.valid = bestScore >= 0.42f;
+    detection.rootPitchClass = bestRoot;
+    detection.bassPitchClass = bassPitchClass;
+    detection.quality = bestQuality;
+    detection.minor =
+        bestQuality == ChordQuality::minor
+        || bestQuality == ChordQuality::minor7;
+    detection.confidence = confidence;
+    return detection;
 }
 
 } // namespace mode1

@@ -14,6 +14,8 @@ void GuitarOnsetTracker::reset() noexcept
     samplesSinceOnset = sampleRate;
     energyBaseline = 1.0e-4f;
     currentRms = 0.0f;
+    previousRms = 0.0f;
+    lastOnsetStrength = 1.0f;
 }
 
 bool GuitarOnsetTracker::processBlock(
@@ -32,8 +34,12 @@ bool GuitarOnsetTracker::processBlock(
 
     const bool refractoryFinished =
         samplesSinceOnset >= refractorySeconds * sampleRate;
+    const bool hasFreshAttack =
+        previousRms <= 1.0e-5f
+        || currentRms >= previousRms * attackRiseRatio;
     const bool onset =
         refractoryFinished
+        && hasFreshAttack
         && currentRms >= minimumOnsetRms
         && currentRms >= energyBaseline * onsetRatio;
 
@@ -44,7 +50,12 @@ bool GuitarOnsetTracker::processBlock(
     energyBaseline = std::max(energyBaseline, 1.0e-4f);
 
     if (onset)
+    {
+        lastOnsetStrength = currentRms
+            / std::max(previousRms, 1.0e-5f);
         samplesSinceOnset = 0.0;
+    }
+    previousRms = currentRms;
     return onset;
 }
 

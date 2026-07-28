@@ -7,10 +7,25 @@
 namespace mode1
 {
 
+enum class ChordQuality
+{
+    major,
+    minor,
+    diminished,
+    suspended2,
+    suspended4,
+    dominant7,
+    major7,
+    minor7,
+    unknown,
+};
+
 struct ChordDetection
 {
     bool valid = false;
     int rootPitchClass = 0;
+    int bassPitchClass = -1;
+    ChordQuality quality = ChordQuality::unknown;
     bool minor = false;
     float confidence = 0.0f;
 };

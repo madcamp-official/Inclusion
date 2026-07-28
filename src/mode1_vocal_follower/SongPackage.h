@@ -48,6 +48,10 @@ public:
 
     [[nodiscard]] bool isLoaded() const noexcept { return !phrases.empty(); }
     [[nodiscard]] const std::vector<Phrase>& getPhrases() const noexcept { return phrases; }
+    [[nodiscard]] const std::vector<ChordEvent>& getChordTimeline() const noexcept
+    {
+        return chordTimeline;
+    }
     [[nodiscard]] const juce::String& getSongName() const noexcept { return songName; }
     [[nodiscard]] double getScoreBpm() const noexcept { return scoreBpm; }
     [[nodiscard]] int getBaseKeyShift() const noexcept { return baseKeyShift; }
@@ -92,6 +96,7 @@ private:
     bool hasManualKeyShiftRange = false;
     int manualKeyShiftMinimum = -6;
     int manualKeyShiftMaximum = 6;
+    std::vector<ChordEvent> chordTimeline;
     std::vector<Phrase> phrases;
 };
 
