@@ -90,10 +90,12 @@ public:
                          mode2::params::scalePitchWindowForSampleRate(
                              mode2::params::vocalPitchWindowSize, sampleRate));
 
-        beginTest(utf8("A2~G5를 옥타브 오류 없이 검출한다 @ ")
+        beginTest(utf8("E2~G5를 옥타브 오류 없이 검출한다 @ ")
                   + juce::String(sampleRate / 1000.0, 1) + "kHz");
-        // A2(110Hz) ~ G5(784Hz). 위쪽 끝이 상한에 걸리면 여기서 -12반음으로 잡힌다.
-        for (int midi : { 45, 52, 57, 64, 69, 72, 76, 79 })
+        // E2(82Hz) ~ G5(784Hz). 양쪽 끝이 각각 다른 방향으로 깨진다:
+        //   상한을 넘으면 진짜 피크가 범위 밖 → 배주기가 잡혀 -12반음 (출력은 한 옥타브 위)
+        //   하한을 밑돌면 진짜 피크가 범위 밖 → 2배음이 잡혀 +12반음 (출력은 한 옥타브 아래)
+        for (int midi : { 40, 43, 45, 52, 57, 64, 69, 72, 76, 79 })
         {
             detector.reset();
             const double f0 = 440.0 * std::pow(2.0, (midi - 69) / 12.0);
