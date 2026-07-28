@@ -4,10 +4,17 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import io
 import json
 import re
+import wave
 from collections import Counter
 from pathlib import Path
+
+import librosa
+import numpy as np
+import soundfile as sf
 
 
 def event_rows(path: Path) -> list[tuple[float, int]]:
@@ -33,6 +40,37 @@ def tracking_rows(path: Path) -> list[dict]:
                 "expired": int(match.group(5)),
             })
     return rows
+
+
+def embedded_preview_audio(path: Path, sample_rate: int = 6_000) -> str:
+    """Return a compact, browser-portable PCM WAV data URI.
+
+    Local file:// audio is blocked by the inline-visualization sandbox. A
+    low-bandwidth mono preview keeps the full timeline audible while staying
+    below the visualization's 2 MB limit.
+    """
+    audio, source_rate = sf.read(path, always_2d=True, dtype="float32")
+    mono = np.mean(audio, axis=1)
+    if source_rate != sample_rate:
+        mono = librosa.resample(
+            mono,
+            orig_sr=source_rate,
+            target_sr=sample_rate,
+            res_type="soxr_hq",
+        )
+    peak = max(1.0e-6, float(np.max(np.abs(mono))))
+    pcm = np.round(
+        (np.clip(mono * (0.92 / peak), -1.0, 1.0) + 1.0) * 127.5
+    ).astype(np.uint8)
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as destination:
+        destination.setnchannels(1)
+        destination.setsampwidth(1)
+        destination.setframerate(sample_rate)
+        destination.writeframes(pcm.tobytes())
+    return "data:audio/wav;base64," + base64.b64encode(
+        buffer.getvalue()
+    ).decode("ascii")
 
 
 def main() -> int:
@@ -180,10 +218,10 @@ def main() -> int:
                 "midi": [int(note.get("midi", 0)) for note in notes],
             })
 
-    app_audio = (
+    app_audio_path = (
         args.render_directory / "guitar_plus_app_vocals.wav"
-    ).resolve().as_uri()
-    source_audio = args.original_audio.resolve().as_uri()
+    ).resolve()
+    app_audio = embedded_preview_audio(app_audio_path)
     data = json.dumps({
         "origin": round(origin, 3),
         "duration": 224.748,
@@ -200,14 +238,9 @@ def main() -> int:
 
     fragment = f"""
 <div id="mapping-review">
-  <div class="viz-grid">
-    <label class="form-label">앱 출력 (+5키 · 표현 100%)
-      <audio id="map-app-audio" controls preload="metadata" src="{app_audio}" style="width:100%"></audio>
-    </label>
-    <label class="form-label">원곡 같은 악보 위치
-      <audio id="map-source-audio" controls preload="metadata" src="{source_audio}" style="width:100%"></audio>
-    </label>
-  </div>
+  <label class="form-label">앱 출력 저용량 미리듣기 (+5키 · 표현 100%)
+    <audio id="map-app-audio" controls preload="metadata" src="{app_audio}" style="width:100%"></audio>
+  </label>
   <div class="viz-row text-small" aria-live="polite">
     <span>출력 <strong id="map-time">0:00.00</strong></span>
     <span>원곡 <strong id="map-source-time">0:00.00</strong></span>
@@ -256,11 +289,11 @@ def main() -> int:
 <script>
 (() => {{
   const d={data}, root=document.getElementById('mapping-review');
-  const app=root.querySelector('#map-app-audio'), source=root.querySelector('#map-source-audio');
-  let active=app, span=16;
+  const app=root.querySelector('#map-app-audio');
+  let span=16;
   const fmt=t=>`${{Math.floor(Math.max(0,t)/60)}}:${{(Math.max(0,t)%60).toFixed(2).padStart(5,'0')}}`;
-  const outputTime=()=>active===app?(app.currentTime||0):(source.currentTime||0)+d.origin;
-  const seek=t=>{{app.currentTime=Math.max(0,t);source.currentTime=Math.max(0,t-d.origin);render();}};
+  const outputTime=()=>app.currentTime||0;
+  const seek=t=>{{app.currentTime=Math.max(0,t);render();}};
   const block=(parent,left,width,text,detail,missed=false)=>{{
     const b=document.createElement('button');b.type='button';b.className='map-block';
     if(missed)b.classList.add('is-missed');
@@ -300,11 +333,11 @@ def main() -> int:
     root.querySelector('#map-chord').textContent=tr?tr.name:'-';
     root.querySelector('#map-measure').textContent=tab?tab.measure:'-';
     root.querySelector('#map-ruler').innerHTML=`<span>${{fmt(lo)}}</span><span>${{fmt(t)}}</span><span>${{fmt(hi)}}</span>`;
-    if(!active.paused)requestAnimationFrame(render);
+    if(!app.paused)requestAnimationFrame(render);
   }};
-  app.addEventListener('play',()=>{{source.pause();active=app;render();}});
-  source.addEventListener('play',()=>{{app.pause();active=source;render();}});
-  [app,source].forEach(a=>{{a.addEventListener('timeupdate',render);a.addEventListener('seeked',render);}});
+  app.addEventListener('play',render);
+  app.addEventListener('timeupdate',render);
+  app.addEventListener('seeked',render);
   root.querySelector('#map-span').addEventListener('input',e=>{{span=Number(e.target.value);render();}});
   root.querySelector('#map-first').addEventListener('click',()=>{{seek(16.6);app.play();}});
   root.querySelector('#map-verse2').addEventListener('click',()=>{{seek(77.3);app.play();}});
