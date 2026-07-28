@@ -13,13 +13,17 @@
 #
 # 프리셋:
 #   airpods   (기본) 출력=에어팟, 목소리=에어팟 마이크, 기타=Scarlett 악기 잭
-#             전부 에어팟으로 듣는 구성. 무선이라 왕복 지연 80ms대 — 소리 확인용이고
-#             연주감(타이밍) 평가에는 쓸 수 없다.
-#   speakers  출력=맥북 스피커, 목소리=에어팟 마이크, 기타=Scarlett 악기 잭
-#             지연이 낮은 대신 스피커+마이크라 하울링 고리가 생긴다. 앱의 "하울링 억제"를
-#             켜고 출력 볼륨을 낮춰서 시작할 것.
+#             전부 24kHz로 돈다(에어팟 마이크가 HFP라 24kHz 전용이고, 마스터가 에어팟이라
+#             통합 기기 전체가 거기 맞춰진다). 24kHz에서는 블록이 21.3ms로 길어져 제어
+#             갱신이 절반이 된다. 무선이라 왕복 80ms대 — 연주감(타이밍) 평가에는 못 쓴다.
 #   builtin   출력=맥북 스피커, 목소리=맥북 내장 마이크, 기타=Scarlett 악기 잭
-#             에어팟 없이 확인할 때.
+#             44.1kHz로 돌아 제어 갱신이 두 배 빠르다. 대신 스피커+열린 마이크라 하울링
+#             고리가 생긴다 — 앱의 "하울링 억제"를 켜고 출력 볼륨을 낮춰서 시작할 것.
+#
+# "출력=맥북 스피커 + 목소리=에어팟 마이크" 조합은 만들 수 없다. 통합 기기의 레이트는
+# 마스터(맨 앞 기기)가 정하는데, 에어팟 마이크는 24kHz만 낼 수 있어서 44.1kHz 통합 기기
+# 안에서는 오류 없이 **무음**이 된다. 실제로 그 조합을 프리셋으로 뒀다가 목소리 입력이
+# 통째로 죽은 걸 한참 뒤에 알았다. 지금은 create가 이 경우를 경고한다.
 #
 # 자세한 배경은 docs/오디오-장치-설정.md 참고.
 
@@ -33,12 +37,11 @@ if [ "$1" = "--no-launch" ]; then
 fi
 
 case "${1:-airpods}" in
-    airpods)  device_name="Scarlett + AirPods";                  output="AirPods";     mic="AirPods" ;;
-    speakers) device_name="Guitar + AirPods Mic (Mac Speakers)"; output="MacBook Pro"; mic="AirPods" ;;
-    builtin)  device_name="Guitar + Built-in Mic";               output="MacBook Pro"; mic="MacBook Pro" ;;
+    airpods)  device_name="Scarlett + AirPods";    output="AirPods";     mic="AirPods" ;;
+    builtin)  device_name="Guitar + Built-in Mic"; output="MacBook Pro"; mic="MacBook Pro" ;;
     *)
         echo "알 수 없는 프리셋: $1"
-        echo "쓸 수 있는 값: airpods, speakers, builtin"
+        echo "쓸 수 있는 값: airpods, builtin"
         exit 1 ;;
 esac
 guitar="Scarlett Solo"

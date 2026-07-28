@@ -151,6 +151,56 @@ static void warnIfSilenced(AudioObjectID device, const char *name)
         printf("  !! %s 의 볼륨이 0이다 — 소리가 안 난다.\n", name);
 }
 
+static int isBluetooth(AudioObjectID device)
+{
+    AudioObjectPropertyAddress addr = { kAudioDevicePropertyTransportType,
+                                        kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain };
+    UInt32 transport = 0;
+    UInt32 size = sizeof(transport);
+    if (AudioObjectGetPropertyData(device, &addr, 0, NULL, &size, &transport) != noErr)
+        return 0;
+    return transport == kAudioDeviceTransportTypeBluetooth
+        || transport == kAudioDeviceTransportTypeBluetoothLE;
+}
+
+// 서브기기가 통합 기기의 샘플레이트를 낼 수 있는지 확인한다.
+//
+// 왜 필요한가: 통합 기기의 레이트는 마스터(첫 번째 기기)가 정하는데, 블루투스 기기는 그
+// 레이트를 못 맞추면 **오류 없이 무음을 낸다**. 에어팟 마이크가 정확히 그렇다 — HFP라
+// 24kHz 전용이어서 44.1kHz 통합 기기(마스터=맥북 스피커) 안에서는 채널이 통째로 0이 된다.
+// 기기는 정상으로 보이고 채널 수도 맞아서, 앱이나 배선을 한참 의심하게 된다.
+//
+// USB·내장 기기는 다르다. Scarlett Solo는 24kHz를 지원하지 않지만 24kHz 통합 기기 안에서
+// 리샘플링을 거쳐 정상 동작한다(실측). 그래서 이 검사는 블루투스에만 적용한다 — 안 그러면
+// 잘 되는 구성에 경고가 떠서 정작 진짜 경고를 흘려보내게 된다.
+static int supportsRate(AudioObjectID device, Float64 rate)
+{
+    AudioObjectPropertyAddress addr = { kAudioDevicePropertyAvailableNominalSampleRates,
+                                        kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain };
+    UInt32 size = 0;
+    if (AudioObjectGetPropertyDataSize(device, &addr, 0, NULL, &size) != noErr || size == 0)
+        return 1;  // 알 수 없으면 경고하지 않는다.
+
+    AudioValueRange *ranges = (AudioValueRange *) malloc(size);
+    int ok = 0;
+    if (AudioObjectGetPropertyData(device, &addr, 0, NULL, &size, ranges) == noErr)
+    {
+        const UInt32 count = size / sizeof(AudioValueRange);
+        for (UInt32 i = 0; i < count; ++i)
+            if (rate >= ranges[i].mMinimum - 1.0 && rate <= ranges[i].mMaximum + 1.0)
+            {
+                ok = 1;
+                break;
+            }
+    }
+    else
+    {
+        ok = 1;
+    }
+    free(ranges);
+    return ok;
+}
+
 static int containsNoCase(const char *haystack, const char *needle)
 {
     size_t nlen = strlen(needle);
@@ -264,6 +314,7 @@ static int createAggregate(const char *name, int deviceCount, char **deviceNames
     CFDictionaryRef subs[16];
     char uids[16][512];
     char names[16][512];
+    AudioObjectID ids[16];
     UInt32 ins[16], outs[16];
     if (deviceCount > 16) deviceCount = 16;
 
@@ -277,6 +328,7 @@ static int createAggregate(const char *name, int deviceCount, char **deviceNames
             printf("`Mode2AudioDevice list`로 실제 이름을 확인하세요.\n");
             return 1;
         }
+        ids[i] = dev;
         deviceName(dev, names[i], sizeof(names[i]));
         ins[i] = channelCount(dev, kAudioObjectPropertyScopeInput);
         outs[i] = channelCount(dev, kAudioObjectPropertyScopeOutput);
@@ -336,6 +388,29 @@ static int createAggregate(const char *name, int deviceCount, char **deviceNames
         }
     }
     printf("\n오디오 인터페이스의 입력 순서는 하드웨어를 따른다(Scarlett Solo: 1=XLR, 2=악기 잭).\n");
+
+    // 마스터가 정한 레이트를 못 내는 서브기기는 오류 없이 무음을 낸다. 반드시 알려준다.
+    //
+    // 단, 마스터와 **같은 물리 기기**는 빼야 한다. 에어팟은 입력/출력이 별도 기기로 잡히는데
+    // 마이크가 열리면 둘 다 HFP 24kHz로 함께 내려간다. 만드는 시점에는 출력이 A2DP 48kHz라
+    // "입력이 48kHz를 못 낸다"고 잡히지만 실제로는 문제없이 동작한다. UID의 ':' 앞부분이
+    // 같으면 같은 물리 기기다("30-0E-...:input" / "30-0E-...:output").
+    const Float64 aggregateRate = sampleRate(created);
+    for (int i = 0; i < deviceCount; ++i)
+    {
+        if (! isBluetooth(ids[i]) || supportsRate(ids[i], aggregateRate))
+            continue;
+
+        const size_t masterBase = strcspn(uids[0], ":");
+        const size_t subBase = strcspn(uids[i], ":");
+        if (masterBase == subBase && strncmp(uids[0], uids[i], masterBase) == 0)
+            continue;
+        printf("\n  !! %s 는 %.0fHz를 낼 수 없다 — 이 기기의 채널은 무음이 된다.\n",
+               names[i], aggregateRate);
+        printf("     통합 기기의 레이트는 맨 앞(마스터) 기기가 정한다. 이 기기를 쓰려면\n"
+               "     마스터를 같은 레이트를 쓰는 기기로 바꾸거나(예: 에어팟을 맨 앞으로),\n"
+               "     다른 마이크를 쓴다. 에어팟 마이크는 HFP라 24000Hz 전용이다.\n");
+    }
     return 0;
 }
 
