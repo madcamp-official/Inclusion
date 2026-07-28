@@ -15,11 +15,14 @@
 #   airpods   (기본) 출력=에어팟, 목소리=에어팟 마이크, 기타=Scarlett 악기 잭
 #             전부 귀로만 듣는 구성. 하울링이 없다. 무선이라 왕복 80ms대라 연주감(타이밍)
 #             평가에는 못 쓴다.
-#   speakers  출력=맥북 스피커, 목소리=에어팟 마이크, 기타=Scarlett 악기 잭
-#             스피커로 들으면서 에어팟 마이크를 쓴다. 스피커+열린 마이크라 하울링 고리가
-#             생긴다 — 앱의 "하울링 억제"를 켜고 출력 볼륨을 낮춰서 시작할 것.
 #   builtin   출력=맥북 스피커, 목소리=맥북 내장 마이크, 기타=Scarlett 악기 잭
-#             에어팟 없이. 44.1kHz로 돌아 제어 갱신이 두 배 빠른 유일한 구성이다.
+#             스피커로 들을 때 쓴다. 44.1kHz로 돌아 제어 갱신이 두 배 빠른 유일한 구성이다.
+#             스피커+열린 마이크라 하울링 고리가 생긴다 — 앱의 "하울링 억제"를 켜고
+#             출력 볼륨을 낮춰서 시작할 것.
+#
+# "출력=맥북 스피커 + 목소리=에어팟 마이크"는 만들 수 없다(speakers를 넣으면 이유를 찍고 멈춘다).
+# 에어팟 마이크는 에어팟이 출력 기기이기도 할 때만 소리를 보낸다. 아니면 그 채널이 오류 없이
+# 완전 무음이 된다 — 기기 목록에도 정상으로 보이고 채널 수도 맞아서 앱을 의심하게 된다.
 #
 # 에어팟 마이크를 쓰는 두 구성(airpods, speakers)은 **전체가 24kHz**로 돈다. 에어팟 마이크는
 # HFP라 24kHz 전용이고, 통합 기기의 레이트는 마스터가 정하는데 블루투스는 레이트를 못 맞추면
@@ -40,7 +43,17 @@ fi
 
 case "${1:-airpods}" in
     airpods)  device_name="Scarlett + AirPods";                  output="AirPods";     mic="AirPods";      room="MacBook Pro 마이크" ;;
-    speakers) device_name="Guitar + AirPods Mic (Mac Speakers)"; output="MacBook Pro"; mic="AirPods";      room="MacBook Pro 마이크" ;;
+    speakers)
+        # 이 조합은 만들 수 없다. 앱 녹음으로 확인(2026-07-28): 출력이 맥북 스피커면
+        # 목소리 채널이 정확히 0이고, 같은 기기에서 출력만 에어팟으로 바꾸면 -54dB로 살아난다.
+        # 에어팟 마이크(HFP)는 에어팟이 출력 기기이기도 할 때만 소리를 보낸다.
+        echo "이 조합은 동작하지 않습니다: 출력=맥북 스피커 + 목소리=에어팟 마이크"
+        echo "  에어팟 마이크는 에어팟이 출력 기기일 때만 소리를 보냅니다(HFP)."
+        echo "  출력이 다른 기기면 목소리 채널이 오류 없이 완전 무음(0)이 됩니다."
+        echo
+        echo "  스피커로 들으려면 : tools/mode2-setup.sh builtin   (목소리 = 내장 마이크)"
+        echo "  에어팟 마이크를 쓰려면: tools/mode2-setup.sh airpods   (출력 = 에어팟)"
+        exit 1 ;;
     # 내장 마이크가 이미 목소리 채널이라 같은 기기를 두 번 넣을 수 없다.
     builtin)  device_name="Guitar + Built-in Mic";               output="MacBook Pro"; mic="MacBook Pro";  room="" ;;
     *)
