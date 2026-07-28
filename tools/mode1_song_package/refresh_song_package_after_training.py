@@ -77,7 +77,7 @@ def copy_manifest(source: Path, destination_dir: Path) -> Path:
 def copy_single_strength_manifest(
     source: Path,
     destination_dir: Path,
-    strength: int = 25,
+    strength: int = 100,
 ) -> Path:
     destination = copy_manifest(source, destination_dir)
     manifest = json.loads(destination.read_text(encoding="utf-8"))
@@ -209,7 +209,7 @@ def configure_single_best_render(
         "label": "single_profile_key",
         "default_key_shift": new_shift,
         "available_key_shifts": [new_shift],
-        "expression_strengths": [25],
+        "expression_strengths": [100],
         "manual_key_shift_range": [-3, 3],
         "selection": "single_best_user_range",
     }
@@ -286,7 +286,7 @@ def main() -> None:
                 str(generated_root / "key_analysis"),
                 "--direct-rvc",
                 "--style-strengths",
-                "25",
+                "100",
             ],
             "사용자 음역 분석 및 최적 키 선택",
         )
@@ -306,7 +306,7 @@ def main() -> None:
         base_manifest = copy_single_strength_manifest(
             selected_anchor,
             generated_root / "base",
-            25,
+            100,
         )
         anchor_shifts = []
     anchor_manifests: list[tuple[int, Path]] = []

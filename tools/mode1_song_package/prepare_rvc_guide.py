@@ -229,7 +229,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--style-strengths",
-        default="25",
+        default="100",
         help="Comma-separated source-expression strengths, e.g. 0,25,50,75,100",
     )
     args = parser.parse_args()
@@ -316,7 +316,10 @@ def main() -> None:
         if item.strip()
     })
     if args.direct_rvc:
-        strength = 25
+        # Direct RVC still renders a single variant, but that variant must
+        # honour the requested expression strength. Previously this branch
+        # silently forced 25 even when the caller requested 100.
+        strength = strengths[-1]
         plan_path = output_dir / f"style_plan_{strength:03d}.json"
         plan = {
             "schema_version": 2,
@@ -469,7 +472,7 @@ def main() -> None:
     manifest_path.write_text(
         json.dumps({
             "schema_version": 1,
-            "default_strength": 25,
+            "default_strength": strengths[-1],
             "base_key_shift": key_shift,
             "variants": variants,
         }, ensure_ascii=False, indent=2) + "\n",
