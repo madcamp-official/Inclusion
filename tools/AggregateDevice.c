@@ -334,15 +334,32 @@ static int createAggregate(const char *name, int deviceCount, char **deviceNames
         outs[i] = channelCount(dev, kAudioObjectPropertyScopeOutput);
         if (outs[i] > 0)
             warnIfSilenced(dev, names[i]);
-        // 마스터(첫 번째)만 자기 클럭을 쓰고 나머지는 드리프트 보정을 켠다.
-        subs[i] = subDeviceDict(uids[i], i == 0 ? 0 : 1);
     }
+
+    // 마스터를 고른다. 마스터는 통합 기기의 샘플레이트를 정하고, 나머지는 드리프트 보정을
+    // 거쳐 거기에 맞춰진다.
+    //
+    // 순서(=채널 배치)와 마스터는 별개다. 예전에는 "맨 앞 기기 = 출력 = 마스터"로 묶어놨는데,
+    // 그러면 출력을 맥북 스피커로 고르는 순간 레이트가 44.1kHz로 정해지고 24kHz 전용인
+    // 에어팟 마이크가 무음이 됐다. 블루투스는 레이트를 못 맞추면 무음이 되지만 USB·내장
+    // 기기는 리샘플링으로 따라오므로(실측), **블루투스 기기가 있으면 그쪽을 마스터로 삼는다.**
+    // 그러면 출력 ch0-1은 여전히 맨 앞 기기가 차지하면서 블루투스 마이크도 살아 있다.
+    int masterIndex = 0;
+    for (int i = 0; i < deviceCount; ++i)
+        if (isBluetooth(ids[i]))
+        {
+            masterIndex = i;
+            break;
+        }
+
+    for (int i = 0; i < deviceCount; ++i)
+        subs[i] = subDeviceDict(uids[i], i == masterIndex ? 0 : 1);
 
     CFArrayRef list = CFArrayCreate(kCFAllocatorDefault, (const void **) subs, deviceCount,
                                     &kCFTypeArrayCallBacks);
     CFMutableDictionaryRef desc = CFDictionaryCreateMutable(kCFAllocatorDefault, 0,
         &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
-    CFStringRef cfName = cf(name), cfUID = cf(uid), cfMaster = cf(uids[0]);
+    CFStringRef cfName = cf(name), cfUID = cf(uid), cfMaster = cf(uids[masterIndex]);
     int isPrivate = 0;
     CFNumberRef cfPrivate = CFNumberCreate(kCFAllocatorDefault, kCFNumberIntType, &isPrivate);
 
@@ -367,7 +384,9 @@ static int createAggregate(const char *name, int deviceCount, char **deviceNames
     }
 
     printf("통합 기기를 만들었습니다: %s  (%.0fHz)\n", name, sampleRate(created));
-    printf("UID: %s\n\n", uid);
+    printf("UID: %s\n", uid);
+    printf("레이트를 정하는 기기(마스터): %s%s\n\n", names[masterIndex],
+           masterIndex == 0 ? "" : "  ← 블루투스라 레이트를 못 맞추면 무음이 되므로 이쪽에 맞춘다");
 
     // 앱에서 어느 채널을 골라야 하는지 그대로 출력한다. 이게 없으면 매번 녹음해서
     // 채널을 찾아내야 한다(실제로 그렇게 한 적이 있다).
