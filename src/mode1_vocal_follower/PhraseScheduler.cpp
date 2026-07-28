@@ -49,14 +49,15 @@ int PhraseScheduler::startNextPhrase() noexcept
 int PhraseScheduler::processBlock(
     int numSamples,
     bool guitarOnset,
-    bool manualTrigger) noexcept
+    bool manualTrigger,
+    bool automaticPlayback) noexcept
 {
     if (song == nullptr || !song->isLoaded())
         return -1;
 
     if (!running)
     {
-        if (guitarOnset || manualTrigger)
+        if (guitarOnset || manualTrigger || automaticPlayback)
             return startNextPhrase();
         return -1;
     }
@@ -68,16 +69,15 @@ int PhraseScheduler::processBlock(
 
     const double targetTime = normalizedStartTime(nextPhraseIndex);
     const double difference = targetTime - songTimeSeconds;
-    const bool onsetInWindow =
-        guitarOnset
-        && difference <= earlyWindowSeconds
-        && difference >= -lateWindowSeconds;
+    const bool onsetIsNotTooEarly =
+        guitarOnset && difference <= earlyWindowSeconds;
 
-    // Accept a slightly late strum, then fall back to the score timeline after
-    // 200 ms so a missed onset cannot create a long silent gap.
+    // In guitar-follow mode the score timeline never advances a phrase by
+    // itself. A late strum is still accepted so the performer can recover
+    // after pausing or missing an onset. Space remains the manual fallback.
     if (manualTrigger
-        || onsetInWindow
-        || songTimeSeconds >= targetTime + automaticStartGraceSeconds)
+        || onsetIsNotTooEarly
+        || (automaticPlayback && songTimeSeconds >= targetTime))
         return startNextPhrase();
 
     return -1;

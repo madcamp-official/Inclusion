@@ -9,6 +9,8 @@ struct RecordingQuality
     double durationSeconds = 0.0;
     float rmsDb = -100.0f;
     float peakDb = -100.0f;
+    float noiseFloorDb = -100.0f;
+    float snrDb = 0.0f;
     float clippingRatio = 0.0f;
     float activeSpeechRatio = 0.0f;
     bool passed = false;

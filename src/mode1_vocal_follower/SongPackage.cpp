@@ -1,5 +1,8 @@
 #include "SongPackage.h"
 
+#include <algorithm>
+#include <cmath>
+
 namespace mode1
 {
 namespace
@@ -60,6 +63,36 @@ bool SongPackage::loadFromFile(const juce::File& packageFile, juce::String& erro
     scoreBpm = numberProperty(rootObject, "score_bpm");
     baseKeyShift = static_cast<int>(
         numberProperty(rootObject, "base_key_shift"));
+    keyAnchors = { baseKeyShift };
+    if (const auto* keyObject =
+            rootObject->getProperty("key_style").getDynamicObject())
+    {
+        if (const auto* anchors =
+                keyObject->getProperty("available_key_shifts").getArray())
+        {
+            keyAnchors.clear();
+            for (const auto& anchor : *anchors)
+                keyAnchors.push_back(static_cast<int>(anchor));
+        }
+        keyAnchors.push_back(baseKeyShift);
+        std::sort(keyAnchors.begin(), keyAnchors.end());
+        keyAnchors.erase(
+            std::unique(keyAnchors.begin(), keyAnchors.end()),
+            keyAnchors.end());
+    }
+    if (const auto* expressionObject =
+            rootObject->getProperty("expression_style").getDynamicObject())
+    {
+        defaultExpressionStrength = static_cast<int>(
+            numberProperty(expressionObject, "default_strength"));
+        if (const auto* strengths =
+                expressionObject->getProperty("available_strengths").getArray())
+        {
+            expressionStrengths.clear();
+            for (const auto& strength : *strengths)
+                expressionStrengths.push_back(static_cast<int>(strength));
+        }
+    }
     if (const auto* styleObject =
             rootObject->getProperty("vocal_style").getDynamicObject())
     {
@@ -130,6 +163,78 @@ bool SongPackage::loadFromFile(const juce::File& packageFile, juce::String& erro
         phrase.vocalFile = packageDirectory
             .getChildFile(vocalDirectoryName)
             .getChildFile(stringProperty(vocalObject, "file"));
+        if (const auto* variantsObject =
+                phraseObject->getProperty("vocal_variants").getDynamicObject())
+        {
+            for (const auto& property : variantsObject->getProperties())
+            {
+                const auto* variantObject = property.value.getDynamicObject();
+                if (variantObject == nullptr)
+                    continue;
+                const auto directory = stringProperty(variantObject, "directory");
+                phrase.vocalVariants.push_back({
+                    property.name.toString().getIntValue(),
+                    baseKeyShift,
+                    numberProperty(variantObject, "content_offset_sec"),
+                    packageDirectory.getChildFile(directory).getChildFile(
+                        stringProperty(variantObject, "file")),
+                });
+            }
+        }
+        if (phrase.vocalVariants.empty())
+            phrase.vocalVariants.push_back({
+                defaultExpressionStrength,
+                baseKeyShift,
+                phrase.contentOffsetSeconds,
+                phrase.vocalFile,
+            });
+        if (const auto* keyVariantsObject =
+                phraseObject->getProperty("vocal_key_variants").getDynamicObject())
+        {
+            for (const auto& keyProperty : keyVariantsObject->getProperties())
+            {
+                const int keyShift =
+                    keyProperty.name.toString().getIntValue();
+                const auto* strengthsObject =
+                    keyProperty.value.getDynamicObject();
+                if (strengthsObject == nullptr)
+                    continue;
+                phrase.vocalVariants.erase(
+                    std::remove_if(
+                        phrase.vocalVariants.begin(),
+                        phrase.vocalVariants.end(),
+                        [keyShift](const VocalVariant& variant)
+                        {
+                            return variant.keyShift == keyShift;
+                        }),
+                    phrase.vocalVariants.end());
+                for (const auto& strengthProperty :
+                     strengthsObject->getProperties())
+                {
+                    const auto* variantObject =
+                        strengthProperty.value.getDynamicObject();
+                    if (variantObject == nullptr)
+                        continue;
+                    const auto directory =
+                        stringProperty(variantObject, "directory");
+                    VocalVariant keyedVariant {
+                        strengthProperty.name.toString().getIntValue(),
+                        keyShift,
+                        numberProperty(
+                            variantObject, "content_offset_sec"),
+                        packageDirectory.getChildFile(directory).getChildFile(
+                            stringProperty(variantObject, "file")),
+                    };
+                    if (variantObject->hasProperty("playback_start_sec"))
+                        keyedVariant.playbackStartSeconds = numberProperty(
+                            variantObject, "playback_start_sec");
+                    if (variantObject->hasProperty("playback_end_sec"))
+                        keyedVariant.playbackEndSeconds = numberProperty(
+                            variantObject, "playback_end_sec");
+                    phrase.vocalVariants.push_back(std::move(keyedVariant));
+                }
+            }
+        }
 
         if (phrase.scoreEndSeconds <= phrase.scoreStartSeconds
             || phrase.sourceEndSeconds <= phrase.sourceStartSeconds)
@@ -146,6 +251,15 @@ bool SongPackage::loadFromFile(const juce::File& packageFile, juce::String& erro
         {
             error = "Missing phrase audio: " + phrase.vocalFile.getFullPathName();
             return false;
+        }
+        for (const auto& variant : phrase.vocalVariants)
+        {
+            if (!variant.vocalFile.existsAsFile())
+            {
+                error = "Missing vocal variant: "
+                    + variant.vocalFile.getFullPathName();
+                return false;
+            }
         }
         previousScoreStart = phrase.scoreStartSeconds;
 
@@ -180,7 +294,27 @@ void SongPackage::clear()
     scoreBpm = 0.0;
     baseKeyShift = 0;
     rangeWarning.clear();
+    defaultExpressionStrength = 25;
+    expressionStrengths = { 25 };
+    keyAnchors = { 0 };
     phrases.clear();
+}
+
+int SongPackage::getNearestKeyAnchor(int targetKeyShift) const noexcept
+{
+    int nearest = baseKeyShift;
+    int bestDistance = std::abs(targetKeyShift - nearest);
+    for (const int anchor : keyAnchors)
+    {
+        const int distance = std::abs(targetKeyShift - anchor);
+        if (distance < bestDistance
+            || (distance == bestDistance && anchor > nearest))
+        {
+            nearest = anchor;
+            bestDistance = distance;
+        }
+    }
+    return nearest;
 }
 
 } // namespace mode1

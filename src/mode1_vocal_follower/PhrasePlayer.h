@@ -23,12 +23,21 @@ public:
 
     void prepare(double outputSampleRate, int maximumBlockSize);
     bool load(const SongPackage& package, juce::String& error);
+    bool loadKeyAnchor(
+        const SongPackage& package,
+        int keyShift,
+        juce::String& error,
+        int expressionStrength = -1);
     void clear();
 
     void requestPhrase(int phraseIndex) noexcept;
     void setPitchSemitones(float semitones) noexcept
     {
         targetPitchSemitones.store(semitones);
+    }
+    void setExpressionStrength(int strength) noexcept
+    {
+        targetExpressionStrength.store(juce::jlimit(0, 100, strength));
     }
     void stop() noexcept;
     void processBlock(float* outputLeft, float* outputRight, int numSamples) noexcept;
@@ -39,17 +48,35 @@ public:
     }
     [[nodiscard]] bool isPlaying() const noexcept { return playing.load(); }
     [[nodiscard]] int getActiveVoiceCount() const noexcept;
+    [[nodiscard]] int getCurrentExpressionStrength() const noexcept
+    {
+        return currentExpressionStrength.load();
+    }
 
 private:
     struct LoadedPhrase
     {
-        juce::AudioBuffer<float> audio;
-        int contentOffsetSamples = 0;
+        struct Variant
+        {
+            int strength = 25;
+            std::shared_ptr<juce::AudioBuffer<float>> audio;
+            int contentOffsetSamples = 0;
+            int playbackEndSamples = 0;
+        };
+        std::vector<Variant> variants;
+    };
+
+    struct PhraseBank
+    {
+        int keyShift = 0;
+        std::vector<std::unique_ptr<LoadedPhrase>> phrases;
     };
 
     struct PlaybackVoice
     {
+        std::shared_ptr<const PhraseBank> bank;
         int phraseIndex = -1;
+        int variantIndex = 0;
         int sourcePosition = 0;
         int samplesSinceStart = 0;
         int fadeInLength = 1;
@@ -72,14 +99,17 @@ private:
         int numSamples) noexcept;
 
     juce::AudioFormatManager formatManager;
-    std::vector<std::unique_ptr<LoadedPhrase>> phrases;
+    std::shared_ptr<PhraseBank> currentBank;
 
     double outputSampleRate = 48'000.0;
     int fadeInSamples = 1;
     int crossfadeSamples = 1;
+    int endFadeSamples = 1;
     int newestVoiceIndex = -1;
     std::array<PlaybackVoice, 2> voices;
     std::atomic<float> targetPitchSemitones { 0.0f };
+    std::atomic<int> targetExpressionStrength { 25 };
+    std::atomic<int> currentExpressionStrength { 25 };
 
     std::atomic<int> requestedPhraseIndex { -1 };
     std::atomic<int> currentPhraseIndex { -1 };

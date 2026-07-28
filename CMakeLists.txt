@@ -49,7 +49,12 @@ target_sources(VocalGuitarApp PRIVATE
     src/mode1_vocal_follower/PhraseScheduler.cpp
     src/mode1_vocal_follower/SongPackage.cpp
     src/voice_capture/RecordingQualityChecker.cpp
+    src/voice_capture/NoiseReducer.cpp
     src/voice_capture/VoiceRecorder.cpp
+    src/voice_capture/VoiceActivityTracker.cpp
+    src/voice_capture/GuidedRecordingSession.cpp
+    src/voice_capture/VoiceModelTrainer.cpp
+    src/main/RecordingSessionScreen.cpp
 )
 
 target_include_directories(VocalGuitarApp PRIVATE
@@ -63,6 +68,10 @@ target_compile_definitions(VocalGuitarApp
         JUCE_APPLICATION_NAME_STRING="$<TARGET_PROPERTY:VocalGuitarApp,JUCE_PRODUCT_NAME>"
         JUCE_APPLICATION_VERSION_STRING="$<TARGET_PROPERTY:VocalGuitarApp,JUCE_VERSION>"
 )
+
+if(WIN32)
+    target_compile_definitions(VocalGuitarApp PRIVATE JUCE_ASIO=1)
+endif()
 
 target_link_libraries(VocalGuitarApp
     PRIVATE
@@ -139,6 +148,39 @@ endif()
 add_test(
     NAME Mode1CoreTests
     COMMAND Mode1CoreTests
+)
+
+# --- Voice capture quality/noise reduction test ------------------------
+juce_add_console_app(VoiceCaptureTests
+    PRODUCT_NAME "Voice Capture Tests"
+)
+
+target_sources(VoiceCaptureTests PRIVATE
+    tests/voice_capture/VoiceCaptureTests.cpp
+    src/voice_capture/NoiseReducer.cpp
+    src/voice_capture/RecordingQualityChecker.cpp
+    src/voice_capture/VoiceRecorder.cpp
+    src/voice_capture/VoiceActivityTracker.cpp
+    src/voice_capture/GuidedRecordingSession.cpp
+)
+
+target_include_directories(VoiceCaptureTests PRIVATE src)
+target_link_libraries(VoiceCaptureTests
+    PRIVATE
+        juce::juce_audio_basics
+        juce::juce_audio_formats
+    PUBLIC
+        juce::juce_recommended_config_flags
+        juce::juce_recommended_warning_flags
+)
+
+if(MSVC)
+    target_compile_options(VoiceCaptureTests PRIVATE /utf-8)
+endif()
+
+add_test(
+    NAME VoiceCaptureTests
+    COMMAND VoiceCaptureTests
 )
 
 # --- MIDI Splitter tool (곡 데이터 제작용 — SynthV 등의 트랙당 노트 수 제한 우회) ---

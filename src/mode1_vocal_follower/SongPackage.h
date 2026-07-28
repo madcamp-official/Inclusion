@@ -15,6 +15,16 @@ struct ChordEvent
     juce::String rawChord;
 };
 
+struct VocalVariant
+{
+    int strength = 25;
+    int keyShift = 0;
+    double contentOffsetSeconds = 0.0;
+    juce::File vocalFile;
+    double playbackStartSeconds = -1.0;
+    double playbackEndSeconds = -1.0;
+};
+
 struct Phrase
 {
     juce::String id;
@@ -25,6 +35,7 @@ struct Phrase
     double sourceEndSeconds = 0.0;
     double contentOffsetSeconds = 0.0;
     juce::File vocalFile;
+    std::vector<VocalVariant> vocalVariants;
     std::vector<ChordEvent> chords;
 };
 
@@ -44,6 +55,19 @@ public:
         return rangeWarning;
     }
     [[nodiscard]] const juce::File& getSourceFile() const noexcept { return sourceFile; }
+    [[nodiscard]] int getDefaultExpressionStrength() const noexcept
+    {
+        return defaultExpressionStrength;
+    }
+    [[nodiscard]] const std::vector<int>& getExpressionStrengths() const noexcept
+    {
+        return expressionStrengths;
+    }
+    [[nodiscard]] const std::vector<int>& getKeyAnchors() const noexcept
+    {
+        return keyAnchors;
+    }
+    [[nodiscard]] int getNearestKeyAnchor(int targetKeyShift) const noexcept;
 
 private:
     juce::File sourceFile;
@@ -51,6 +75,9 @@ private:
     double scoreBpm = 0.0;
     int baseKeyShift = 0;
     juce::String rangeWarning;
+    int defaultExpressionStrength = 25;
+    std::vector<int> expressionStrengths { 25 };
+    std::vector<int> keyAnchors { 0 };
     std::vector<Phrase> phrases;
 };
 

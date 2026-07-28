@@ -6,6 +6,7 @@
 #include "PhraseScheduler.h"
 #include "SongPackage.h"
 
+#include <algorithm>
 #include <atomic>
 
 namespace mode1
@@ -25,6 +26,23 @@ public:
         int numSamples) noexcept;
 
     void triggerNextPhrase() noexcept { manualTrigger.store(true); }
+    void triggerVirtualChord(int rootPitchClass) noexcept
+    {
+        pendingVirtualChordRoot.store(
+            juce::jlimit(0, 11, rootPitchClass));
+    }
+    void startAutomaticPlayback() noexcept;
+    void stopAutomaticPlayback() noexcept;
+    [[nodiscard]] bool isAutomaticPlaybackEnabled() const noexcept
+    {
+        return automaticPlayback.load();
+    }
+    bool setExpressionStrength(
+        int strength,
+        juce::String* error = nullptr);
+    bool setManualKeyShift(
+        int semitones,
+        juce::String* error = nullptr);
 
     [[nodiscard]] bool hasSong() const noexcept { return songPackage.isLoaded(); }
     [[nodiscard]] bool isGuitarActive() const noexcept
@@ -48,9 +66,37 @@ public:
     {
         return songPackage.getRangeWarning();
     }
+    [[nodiscard]] int getExpressionStrength() const noexcept
+    {
+        return expressionStrength.load();
+    }
+    [[nodiscard]] int getDefaultExpressionStrength() const noexcept
+    {
+        return songPackage.getDefaultExpressionStrength();
+    }
     [[nodiscard]] int getPitchShiftSemitones() const noexcept
     {
-        return stablePitchShift.load();
+        return getResidualKeyShift() + stablePitchShift.load();
+    }
+    [[nodiscard]] int getManualKeyShift() const noexcept
+    {
+        return manualKeyShift.load();
+    }
+    [[nodiscard]] int getEffectiveBaseKeyShift() const noexcept
+    {
+        return getBaseKeyShift() + manualKeyShift.load();
+    }
+    [[nodiscard]] int getMaximumManualKeyShift() const noexcept
+    {
+        return std::max(6, -getBaseKeyShift());
+    }
+    [[nodiscard]] int getSelectedKeyAnchor() const noexcept
+    {
+        return selectedKeyAnchor.load();
+    }
+    [[nodiscard]] int getResidualKeyShift() const noexcept
+    {
+        return getEffectiveBaseKeyShift() - selectedKeyAnchor.load();
     }
     [[nodiscard]] juce::String getDetectedChordName() const;
 
@@ -65,12 +111,19 @@ private:
     GuitarChordTracker chordTracker;
 
     std::atomic<bool> manualTrigger { false };
+    std::atomic<bool> automaticPlayback { false };
+    std::atomic<int> pendingVirtualChordRoot { -1 };
     std::atomic<bool> guitarActive { false };
     std::atomic<bool> lastOnset { false };
     std::atomic<float> guitarRms { 0.0f };
     std::atomic<int> lastStartedPhrase { -1 };
     std::atomic<int> detectedChordRoot { -1 };
     std::atomic<int> stablePitchShift { 0 };
+    std::atomic<int> expressionStrength { 25 };
+    std::atomic<int> manualKeyShift { 0 };
+    std::atomic<int> selectedKeyAnchor { 0 };
+    std::atomic<unsigned int> manualKeyRevision { 0 };
+    unsigned int observedManualKeyRevision = 0;
     int pendingPitchShift = 0;
     int pendingPitchShiftCount = 0;
 };

@@ -19,11 +19,26 @@ bool Mode1Controller::loadSongPackage(
     if (!candidate.loadFromFile(packageFile, error))
         return false;
 
-    if (!phrasePlayer.load(candidate, error))
-        return false;
-
     songPackage = std::move(candidate);
+    const int defaultExpression =
+        songPackage.getDefaultExpressionStrength();
+    if (!phrasePlayer.loadKeyAnchor(
+            songPackage,
+            songPackage.getBaseKeyShift(),
+            error,
+            defaultExpression))
+    {
+        songPackage.clear();
+        return false;
+    }
+
     scheduler.setSong(&songPackage);
+    manualKeyShift.store(0);
+    selectedKeyAnchor.store(songPackage.getBaseKeyShift());
+    stablePitchShift.store(0);
+    manualKeyRevision.fetch_add(1);
+    expressionStrength.store(defaultExpression);
+    phrasePlayer.setExpressionStrength(defaultExpression);
     lastStartedPhrase.store(-1);
     return true;
 }
@@ -35,12 +50,17 @@ void Mode1Controller::reset() noexcept
     onsetTracker.reset();
     chordTracker.reset();
     manualTrigger.store(false);
+    automaticPlayback.store(false);
+    pendingVirtualChordRoot.store(-1);
     guitarActive.store(false);
     lastOnset.store(false);
     guitarRms.store(0.0f);
     lastStartedPhrase.store(-1);
     detectedChordRoot.store(-1);
     stablePitchShift.store(0);
+    manualKeyShift.store(0);
+    selectedKeyAnchor.store(songPackage.getBaseKeyShift());
+    manualKeyRevision.fetch_add(1);
     pendingPitchShift = 0;
     pendingPitchShiftCount = 0;
 }
@@ -51,19 +71,54 @@ void Mode1Controller::processBlock(
     float* outputRight,
     int numSamples) noexcept
 {
-    const bool onset = onsetTracker.processBlock(guitarInput, numSamples);
+    const auto keyRevision = manualKeyRevision.load();
+    if (keyRevision != observedManualKeyRevision)
+    {
+        observedManualKeyRevision = keyRevision;
+        pendingPitchShift = 0;
+        pendingPitchShiftCount = 0;
+        stablePitchShift.store(0);
+    }
+
+    const bool physicalOnset =
+        onsetTracker.processBlock(guitarInput, numSamples);
+    const int virtualChordRoot =
+        pendingVirtualChordRoot.exchange(-1);
+    const bool virtualOnset = virtualChordRoot >= 0;
+    const bool autoPlaying = automaticPlayback.load();
+    const bool onset =
+        !autoPlaying && (physicalOnset || virtualOnset);
     ChordDetection chordDetection;
-    const bool hasChordDetection =
-        chordTracker.processBlock(guitarInput, numSamples, onset, chordDetection);
+    bool hasChordDetection = false;
+    if (virtualOnset && !autoPlaying)
+    {
+        chordDetection.valid = true;
+        chordDetection.rootPitchClass = virtualChordRoot;
+        chordDetection.confidence = 1.0f;
+        hasChordDetection = true;
+    }
+    else
+    {
+        hasChordDetection = chordTracker.processBlock(
+            guitarInput,
+            numSamples,
+            physicalOnset && !autoPlaying,
+            chordDetection);
+    }
     if (hasChordDetection && chordDetection.valid)
         updateTransposition(chordDetection);
-    const bool manual = manualTrigger.exchange(false);
+    const bool manual =
+        !autoPlaying && manualTrigger.exchange(false);
     guitarActive.store(onsetTracker.isActive());
     guitarRms.store(onsetTracker.getCurrentRms());
     lastOnset.store(onset);
 
     const int phraseToStart =
-        scheduler.processBlock(numSamples, onset, manual);
+        scheduler.processBlock(
+            numSamples,
+            onset,
+            manual,
+            autoPlaying);
     if (phraseToStart >= 0)
     {
         phrasePlayer.requestPhrase(phraseToStart);
@@ -71,8 +126,94 @@ void Mode1Controller::processBlock(
     }
 
     phrasePlayer.setPitchSemitones(
-        static_cast<float>(stablePitchShift.load()));
+        static_cast<float>(juce::jlimit(
+            -24,
+            24,
+            getResidualKeyShift() + stablePitchShift.load())));
     phrasePlayer.processBlock(outputLeft, outputRight, numSamples);
+}
+
+void Mode1Controller::startAutomaticPlayback() noexcept
+{
+    scheduler.reset();
+    phrasePlayer.stop();
+    lastStartedPhrase.store(-1);
+    lastOnset.store(false);
+    manualTrigger.store(false);
+    pendingVirtualChordRoot.store(-1);
+    automaticPlayback.store(true);
+}
+
+void Mode1Controller::stopAutomaticPlayback() noexcept
+{
+    automaticPlayback.store(false);
+    scheduler.reset();
+    phrasePlayer.stop();
+    lastStartedPhrase.store(-1);
+    lastOnset.store(false);
+    manualTrigger.store(false);
+    pendingVirtualChordRoot.store(-1);
+}
+
+bool Mode1Controller::setManualKeyShift(
+    int semitones,
+    juce::String* error)
+{
+    const int clamped = juce::jlimit(
+        -6,
+        getMaximumManualKeyShift(),
+        semitones);
+    const int targetKeyShift = getBaseKeyShift() + clamped;
+    const int anchor = songPackage.getNearestKeyAnchor(targetKeyShift);
+
+    if (songPackage.isLoaded() && anchor != selectedKeyAnchor.load())
+    {
+        juce::String loadError;
+        if (!phrasePlayer.loadKeyAnchor(
+                songPackage,
+                anchor,
+                loadError,
+                expressionStrength.load()))
+        {
+            if (error != nullptr)
+                *error = loadError;
+            return false;
+        }
+        selectedKeyAnchor.store(anchor);
+    }
+
+    manualKeyShift.store(clamped);
+    stablePitchShift.store(0);
+    manualKeyRevision.fetch_add(1);
+    if (error != nullptr)
+        error->clear();
+    return true;
+}
+
+bool Mode1Controller::setExpressionStrength(
+    int strength,
+    juce::String* error)
+{
+    const int clamped = juce::jlimit(0, 100, strength);
+    if (songPackage.isLoaded() && clamped != expressionStrength.load())
+    {
+        juce::String loadError;
+        if (!phrasePlayer.loadKeyAnchor(
+                songPackage,
+                selectedKeyAnchor.load(),
+                loadError,
+                clamped))
+        {
+            if (error != nullptr)
+                *error = loadError;
+            return false;
+        }
+    }
+    expressionStrength.store(clamped);
+    phrasePlayer.setExpressionStrength(clamped);
+    if (error != nullptr)
+        error->clear();
+    return true;
 }
 
 juce::String Mode1Controller::getCurrentLyrics() const
@@ -122,7 +263,7 @@ int Mode1Controller::expectedRootForPhrase(int phraseIndex) const noexcept
                 root = (root + 1) % 12;
             else if (chord.length() > 1 && chord[1] == 'B')
                 root = (root + 11) % 12;
-            return root;
+            return (root + manualKeyShift.load() + 12) % 12;
         }
     }
     return -1;

@@ -12,12 +12,18 @@ public:
 
     void initialise(const juce::String&) override
     {
+        // JUCE's platform default may select a Latin-only face on Windows.
+        // Malgun Gothic contains the complete Korean glyph set and is bundled
+        // with supported Windows versions.
+        lookAndFeel.setDefaultSansSerifTypefaceName("Malgun Gothic");
+        juce::LookAndFeel::setDefaultLookAndFeel(&lookAndFeel);
         mainWindow.reset(new MainWindow(getApplicationName()));
     }
 
     void shutdown() override
     {
         mainWindow = nullptr;
+        juce::LookAndFeel::setDefaultLookAndFeel(nullptr);
     }
 
     void systemRequestedQuit() override
@@ -49,6 +55,7 @@ public:
     };
 
 private:
+    juce::LookAndFeel_V4 lookAndFeel;
     std::unique_ptr<MainWindow> mainWindow;
 };
 

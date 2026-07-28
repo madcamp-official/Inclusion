@@ -7,6 +7,7 @@
 
 #include <juce_core/juce_core.h>
 
+#include <algorithm>
 #include <iostream>
 #include <cmath>
 #include <memory>
@@ -54,10 +55,14 @@ juce::File createFixturePackage()
     packageFile.replaceWithText(
         juce::String::fromUTF8(R"json(
 {
-  "schema_version": 2,
+  "schema_version": 4,
   "song": "fixture",
   "score_bpm": 120.0,
   "base_key_shift": -17,
+  "key_style": {
+    "default_key_shift": -17,
+    "available_key_shifts": [-17, 0]
+  },
   "vocal_style": {
     "range_warnings": [
       { "type": "above_comfortable_range", "semitones": 1.0 }
@@ -70,7 +75,12 @@ juce::File createFixturePackage()
       "score": { "start_sec": 0.0, "end_sec": 0.45 },
       "source": { "start_sec": 0.0, "end_sec": 0.45 },
       "chords": [{ "start_sec": 0.0, "chord": "C", "raw_chord": "C" }],
-      "vocal": { "directory": ".", "file": "tone.wav", "content_offset_sec": 0.0 }
+      "vocal": { "directory": ".", "file": "tone.wav", "content_offset_sec": 0.0 },
+      "vocal_key_variants": {
+        "0": {
+          "25": { "directory": ".", "file": "tone.wav", "content_offset_sec": 0.0 }
+        }
+      }
     },
     {
       "phrase_id": "micro_001",
@@ -78,7 +88,12 @@ juce::File createFixturePackage()
       "score": { "start_sec": 0.5, "end_sec": 0.95 },
       "source": { "start_sec": 0.5, "end_sec": 0.95 },
       "chords": [{ "start_sec": 0.5, "chord": "F", "raw_chord": "F" }],
-      "vocal": { "directory": ".", "file": "tone.wav", "content_offset_sec": 0.0 }
+      "vocal": { "directory": ".", "file": "tone.wav", "content_offset_sec": 0.0 },
+      "vocal_key_variants": {
+        "0": {
+          "25": { "directory": ".", "file": "tone.wav", "content_offset_sec": 0.0 }
+        }
+      }
     },
     {
       "phrase_id": "micro_002",
@@ -86,7 +101,12 @@ juce::File createFixturePackage()
       "score": { "start_sec": 1.0, "end_sec": 1.45 },
       "source": { "start_sec": 1.0, "end_sec": 1.45 },
       "chords": [{ "start_sec": 1.0, "chord": "G", "raw_chord": "G" }],
-      "vocal": { "directory": ".", "file": "tone.wav", "content_offset_sec": 0.0 }
+      "vocal": { "directory": ".", "file": "tone.wav", "content_offset_sec": 0.0 },
+      "vocal_key_variants": {
+        "0": {
+          "25": { "directory": ".", "file": "tone.wav", "content_offset_sec": 0.0 }
+        }
+      }
     }
   ]
 }
@@ -135,29 +155,51 @@ int main(int argc, char* argv[])
         scheduler.processBlock(512, false, true) == 1,
         "second manual trigger should advance to phrase one");
 
-    mode1::PhraseScheduler fallbackScheduler;
-    fallbackScheduler.prepare(48'000.0);
-    fallbackScheduler.setSong(&package);
+    mode1::PhraseScheduler guitarDrivenScheduler;
+    guitarDrivenScheduler.prepare(48'000.0);
+    guitarDrivenScheduler.setSong(&package);
     passed &= require(
-        fallbackScheduler.processBlock(512, false, true) == 0,
-        "fallback scheduler should start phrase zero");
+        guitarDrivenScheduler.processBlock(512, false, true) == 0,
+        "guitar-driven scheduler should start phrase zero");
     const double nextTargetSeconds =
         package.getPhrases()[1].scoreStartSeconds
         - package.getPhrases()[0].scoreStartSeconds;
-    double fallbackElapsedSeconds = 0.0;
-    int fallbackResult = -1;
-    while (fallbackElapsedSeconds < nextTargetSeconds + 0.5)
+    double waitingElapsedSeconds = 0.0;
+    int waitingResult = -1;
+    while (waitingElapsedSeconds < nextTargetSeconds + 0.5)
     {
-        fallbackResult =
-            fallbackScheduler.processBlock(512, false, false);
-        fallbackElapsedSeconds += 512.0 / 48'000.0;
-        if (fallbackResult >= 0)
+        waitingResult =
+            guitarDrivenScheduler.processBlock(512, false, false);
+        waitingElapsedSeconds += 512.0 / 48'000.0;
+        if (waitingResult >= 0)
             break;
     }
     passed &= require(
-        fallbackResult == 1
-            && fallbackElapsedSeconds <= nextTargetSeconds + 0.22,
-        "missed onset should not create a long silent gap");
+        waitingResult == -1,
+        "a missing guitar onset must not auto-advance the lyrics");
+    passed &= require(
+        guitarDrivenScheduler.processBlock(512, true, false) == 1,
+        "a late guitar onset should advance the waiting phrase");
+
+    mode1::PhraseScheduler automaticScheduler;
+    automaticScheduler.prepare(48'000.0);
+    automaticScheduler.setSong(&package);
+    passed &= require(
+        automaticScheduler.processBlock(512, false, false, true) == 0,
+        "automatic playback should start phrase zero");
+    double automaticElapsedSeconds = 0.0;
+    int automaticResult = -1;
+    while (automaticElapsedSeconds < nextTargetSeconds + 0.1)
+    {
+        automaticResult =
+            automaticScheduler.processBlock(512, false, false, true);
+        automaticElapsedSeconds += 512.0 / 48'000.0;
+        if (automaticResult >= 0)
+            break;
+    }
+    passed &= require(
+        automaticResult == 1,
+        "automatic playback should follow the score phrase timing");
 
     mode1::PhrasePlayer phrasePlayer;
     phrasePlayer.prepare(48'000.0, 512);
@@ -175,6 +217,16 @@ int main(int argc, char* argv[])
     passed &= require(
         phrasePlayer.getActiveVoiceCount() == 2,
         "phrase transition should overlap two playback voices");
+    if (package.getExpressionStrengths().size() >= 5)
+    {
+        phrasePlayer.setExpressionStrength(100);
+        phrasePlayer.requestPhrase(2);
+        phrasePlayer.processBlock(
+            crossfadeLeft.data(), crossfadeRight.data(), 512);
+        passed &= require(
+            phrasePlayer.getCurrentExpressionStrength() == 100,
+            "expression slider should select the 100% vocal variant");
+    }
 
     mode1::GuitarOnsetTracker onsetTracker;
     onsetTracker.prepare(48'000.0);
@@ -231,10 +283,45 @@ int main(int argc, char* argv[])
 
     mode1::Mode1Controller controller;
     controller.prepare(48'000.0, 512);
+    const double packageLoadStart = juce::Time::getMillisecondCounterHiRes();
     passed &= require(
         controller.loadSongPackage(packageFile, error),
         error.toRawUTF8());
+    std::cout << "Controller package load: "
+              << juce::Time::getMillisecondCounterHiRes() - packageLoadStart
+              << " ms\n";
     controller.triggerNextPhrase();
+    controller.setManualKeyShift(3);
+    passed &= require(
+        controller.getSelectedKeyAnchor()
+                + controller.getPitchShiftSemitones()
+            == controller.getEffectiveBaseKeyShift(),
+        "anchor plus residual pitch should equal the requested key");
+    const double anchorLoadStart = juce::Time::getMillisecondCounterHiRes();
+    controller.setManualKeyShift(17);
+    std::cout << "Original-key anchor load: "
+              << juce::Time::getMillisecondCounterHiRes() - anchorLoadStart
+              << " ms\n";
+    std::cout << "Original-key selection: max="
+              << controller.getMaximumManualKeyShift()
+              << " effective=" << controller.getEffectiveBaseKeyShift()
+              << " anchor=" << controller.getSelectedKeyAnchor()
+              << " residual=" << controller.getResidualKeyShift()
+              << " realtime=" << controller.getPitchShiftSemitones()
+              << '\n';
+    const bool hasOriginalKeyAnchor =
+        std::find(
+            package.getKeyAnchors().begin(),
+            package.getKeyAnchors().end(),
+            0) != package.getKeyAnchors().end();
+    passed &= require(
+        controller.getMaximumManualKeyShift() == 17
+            && controller.getEffectiveBaseKeyShift() == 0
+            && (!hasOriginalKeyAnchor
+                || (controller.getSelectedKeyAnchor() == 0
+                    && controller.getResidualKeyShift() == 0
+                    && controller.getPitchShiftSemitones() == 0)),
+        "original-key anchor should avoid a +17 real-time pitch shift");
 
     std::vector<float> outputLeft(512);
     std::vector<float> outputRight(512);

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <unordered_map>
 
 namespace mode1
 {
@@ -16,6 +17,9 @@ void PhrasePlayer::prepare(double newOutputSampleRate, int maximumBlockSize)
     outputSampleRate = std::max(1.0, newOutputSampleRate);
     fadeInSamples = std::max(1, juce::roundToInt(outputSampleRate * 0.020));
     crossfadeSamples = std::max(1, juce::roundToInt(outputSampleRate * 0.045));
+    // A 20 ms tail is short enough to still click on a sustained vowel, so
+    // phrase ends get their own, longer ramp.
+    endFadeSamples = std::max(1, juce::roundToInt(outputSampleRate * 0.035));
     for (auto& voice : voices)
     {
         voice.scratch.assign(
@@ -27,7 +31,10 @@ void PhrasePlayer::prepare(double newOutputSampleRate, int maximumBlockSize)
         voice.soundTouch.setTempo(1.0);
         voice.soundTouch.setRate(1.0);
         voice.soundTouch.setPitchSemiTones(0.0);
-        voice.soundTouch.setSetting(SETTING_USE_QUICKSEEK, 1);
+        // Quickseek picks cheaper correlation points; on sustained vocal
+        // material that shows up as periodic roughness, and we only ever
+        // run two mono voices so the CPU saving is not needed.
+        voice.soundTouch.setSetting(SETTING_USE_QUICKSEEK, 0);
 #endif
     }
 }
@@ -35,74 +42,162 @@ void PhrasePlayer::prepare(double newOutputSampleRate, int maximumBlockSize)
 bool PhrasePlayer::load(const SongPackage& package, juce::String& error)
 {
     clear();
-    error.clear();
+    return loadKeyAnchor(package, package.getBaseKeyShift(), error);
+}
 
-    std::vector<std::unique_ptr<LoadedPhrase>> loaded;
-    loaded.reserve(package.getPhrases().size());
+bool PhrasePlayer::loadKeyAnchor(
+    const SongPackage& package,
+    int keyShift,
+    juce::String& error,
+    int expressionStrength)
+{
+    error.clear();
+    auto loaded = std::make_shared<PhraseBank>();
+    loaded->keyShift = keyShift;
+    loaded->phrases.reserve(package.getPhrases().size());
+    std::unordered_map<
+        std::string,
+        std::shared_ptr<juce::AudioBuffer<float>>> audioCache;
 
     for (const auto& phrase : package.getPhrases())
     {
-        std::unique_ptr<juce::AudioFormatReader> reader(
-            formatManager.createReaderFor(phrase.vocalFile));
-        if (reader == nullptr)
-        {
-            error = "Could not read phrase audio: " + phrase.vocalFile.getFullPathName();
-            return false;
-        }
-
-        juce::AudioBuffer<float> source;
-        source.setSize(1, static_cast<int>(reader->lengthInSamples) + 1);
-        if (!reader->read(
-                &source,
-                0,
-                static_cast<int>(reader->lengthInSamples),
-                0,
-                true,
-                true))
-        {
-            error = "Failed while reading phrase audio: " + phrase.vocalFile.getFullPathName();
-            return false;
-        }
-
         auto item = std::make_unique<LoadedPhrase>();
-        const double ratio = outputSampleRate / reader->sampleRate;
-        const int outputLength = std::max(
-            2,
-            juce::roundToInt(reader->lengthInSamples * ratio));
-        item->audio.setSize(1, outputLength);
-        const auto* input = source.getReadPointer(0);
-        auto* output = item->audio.getWritePointer(0);
-        const double inputStep = reader->sampleRate / outputSampleRate;
-        for (int sample = 0; sample < outputLength; ++sample)
+        const VocalVariant* selectedVariant = nullptr;
+        int selectedDistance = 101;
+        if (expressionStrength >= 0)
         {
-            const double position = sample * inputStep;
-            const int index = juce::jlimit(
-                0,
-                static_cast<int>(reader->lengthInSamples) - 1,
-                static_cast<int>(position));
-            const int next = std::min(
-                index + 1,
-                static_cast<int>(reader->lengthInSamples) - 1);
-            const float fraction = static_cast<float>(position - index);
-            output[sample] = input[index]
-                + fraction * (input[next] - input[index]);
+            for (const auto& candidate : phrase.vocalVariants)
+            {
+                if (candidate.keyShift != keyShift)
+                    continue;
+                const int distance =
+                    std::abs(candidate.strength - expressionStrength);
+                if (distance < selectedDistance)
+                {
+                    selectedVariant = &candidate;
+                    selectedDistance = distance;
+                }
+            }
         }
+        for (const auto& sourceVariant : phrase.vocalVariants)
+        {
+            if (sourceVariant.keyShift != keyShift)
+                continue;
+            if (selectedVariant != nullptr
+                && &sourceVariant != selectedVariant)
+                continue;
+            const auto cacheKey =
+                sourceVariant.vocalFile.getFullPathName().toStdString();
+            auto cached = audioCache.find(cacheKey);
+            std::shared_ptr<juce::AudioBuffer<float>> resampled;
+            double sourceSampleRate = outputSampleRate;
+            if (cached == audioCache.end())
+            {
+                std::unique_ptr<juce::AudioFormatReader> reader(
+                    formatManager.createReaderFor(sourceVariant.vocalFile));
+                if (reader == nullptr)
+                {
+                    error = "Could not read vocal variant: "
+                        + sourceVariant.vocalFile.getFullPathName();
+                    return false;
+                }
+                juce::AudioBuffer<float> source;
+                source.setSize(
+                    1, static_cast<int>(reader->lengthInSamples));
+                if (!reader->read(
+                        &source,
+                        0,
+                        static_cast<int>(reader->lengthInSamples),
+                        0,
+                        true,
+                        true))
+                {
+                    error = "Failed while reading vocal variant: "
+                        + sourceVariant.vocalFile.getFullPathName();
+                    return false;
+                }
 
-        item->contentOffsetSamples = juce::jlimit(
-            0,
-            std::max(0, item->audio.getNumSamples() - 1),
-            juce::roundToInt(phrase.contentOffsetSeconds * outputSampleRate));
-        loaded.push_back(std::move(item));
+                sourceSampleRate = reader->sampleRate;
+                const double ratio = outputSampleRate / sourceSampleRate;
+                const int outputLength = std::max(
+                    2,
+                    juce::roundToInt(reader->lengthInSamples * ratio));
+                resampled =
+                    std::make_shared<juce::AudioBuffer<float>>(1, outputLength);
+                const auto* input = source.getReadPointer(0);
+                auto* output = resampled->getWritePointer(0);
+                if (std::abs(sourceSampleRate - outputSampleRate) < 0.5)
+                {
+                    juce::FloatVectorOperations::copy(
+                        output, input, outputLength);
+                }
+                else
+                {
+                    const double inputStep =
+                        sourceSampleRate / outputSampleRate;
+                    for (int sample = 0; sample < outputLength; ++sample)
+                    {
+                        const double position = sample * inputStep;
+                        const int index = juce::jlimit(
+                            0,
+                            static_cast<int>(reader->lengthInSamples) - 1,
+                            static_cast<int>(position));
+                        const int next = std::min(
+                            index + 1,
+                            static_cast<int>(reader->lengthInSamples) - 1);
+                        const float fraction =
+                            static_cast<float>(position - index);
+                        output[sample] = input[index]
+                            + fraction * (input[next] - input[index]);
+                    }
+                }
+                audioCache.emplace(cacheKey, resampled);
+            }
+            else
+            {
+                resampled = cached->second;
+            }
+
+            LoadedPhrase::Variant variant;
+            variant.strength = sourceVariant.strength;
+            variant.audio = std::move(resampled);
+            variant.contentOffsetSamples = juce::jlimit(
+                0,
+                std::max(0, variant.audio->getNumSamples() - 1),
+                juce::roundToInt((
+                    sourceVariant.playbackStartSeconds >= 0.0
+                        ? sourceVariant.playbackStartSeconds
+                        : sourceVariant.contentOffsetSeconds)
+                    * outputSampleRate));
+            variant.playbackEndSamples =
+                sourceVariant.playbackEndSeconds >= 0.0
+                ? juce::jlimit(
+                    variant.contentOffsetSamples + 1,
+                    variant.audio->getNumSamples(),
+                    juce::roundToInt(
+                        sourceVariant.playbackEndSeconds
+                        * outputSampleRate))
+                : variant.audio->getNumSamples();
+            item->variants.push_back(std::move(variant));
+        }
+        if (item->variants.empty())
+        {
+            error = "Phrase " + phrase.id
+                + " has no vocal audio for key anchor "
+                + juce::String(keyShift) + " st.";
+            return false;
+        }
+        loaded->phrases.push_back(std::move(item));
     }
 
-    phrases = std::move(loaded);
-    return !phrases.empty();
+    currentBank = std::move(loaded);
+    return currentBank != nullptr && !currentBank->phrases.empty();
 }
 
 void PhrasePlayer::clear()
 {
     stop();
-    phrases.clear();
+    currentBank.reset();
 }
 
 void PhrasePlayer::requestPhrase(int phraseIndex) noexcept
@@ -122,7 +217,9 @@ void PhrasePlayer::stop() noexcept
 
 void PhrasePlayer::resetVoice(PlaybackVoice& voice) noexcept
 {
+    voice.bank.reset();
     voice.phraseIndex = -1;
+    voice.variantIndex = 0;
     voice.sourcePosition = 0;
     voice.samplesSinceStart = 0;
     voice.fadeInLength = 1;
@@ -137,7 +234,10 @@ void PhrasePlayer::resetVoice(PlaybackVoice& voice) noexcept
 
 void PhrasePlayer::startRequestedPhrase(int phraseIndex) noexcept
 {
-    if (phraseIndex < 0 || phraseIndex >= static_cast<int>(phrases.size()))
+    const auto bank = currentBank;
+    if (bank == nullptr
+        || phraseIndex < 0
+        || phraseIndex >= static_cast<int>(bank->phrases.size()))
         return;
 
     const bool hasPreviousVoice =
@@ -149,9 +249,27 @@ void PhrasePlayer::startRequestedPhrase(int phraseIndex) noexcept
     const int nextVoiceIndex = newestVoiceIndex == 0 ? 1 : 0;
     auto& voice = voices[static_cast<size_t>(nextVoiceIndex)];
     resetVoice(voice);
-    const auto& phrase = *phrases[static_cast<size_t>(phraseIndex)];
+    voice.bank = bank;
+    const auto& phrase =
+        *bank->phrases[static_cast<size_t>(phraseIndex)];
+    const int requestedStrength = targetExpressionStrength.load();
+    int bestDistance = 101;
+    for (int index = 0; index < static_cast<int>(phrase.variants.size()); ++index)
+    {
+        const int distance =
+            std::abs(phrase.variants[static_cast<size_t>(index)].strength
+                - requestedStrength);
+        if (distance < bestDistance)
+        {
+            bestDistance = distance;
+            voice.variantIndex = index;
+        }
+    }
+    const auto& variant =
+        phrase.variants[static_cast<size_t>(voice.variantIndex)];
+    currentExpressionStrength.store(variant.strength);
     voice.phraseIndex = phraseIndex;
-    voice.sourcePosition = phrase.contentOffsetSamples;
+    voice.sourcePosition = variant.contentOffsetSamples;
     voice.fadeInLength = hasPreviousVoice ? crossfadeSamples : fadeInSamples;
     voice.currentPitchSemitones = targetPitchSemitones.load();
     voice.active = true;
@@ -170,16 +288,21 @@ void PhrasePlayer::renderVoice(
     int numSamples) noexcept
 {
     if (!voice.active
+        || voice.bank == nullptr
         || voice.phraseIndex < 0
-        || voice.phraseIndex >= static_cast<int>(phrases.size()))
+        || voice.phraseIndex
+            >= static_cast<int>(voice.bank->phrases.size()))
         return;
 
-    const auto& phrase = *phrases[static_cast<size_t>(voice.phraseIndex)];
-    const int sourceLength = phrase.audio.getNumSamples();
-    const auto* source = phrase.audio.getReadPointer(0);
+    const auto& phrase =
+        *voice.bank->phrases[static_cast<size_t>(voice.phraseIndex)];
+    const auto& variant =
+        phrase.variants[static_cast<size_t>(voice.variantIndex)];
+    const int sourceLength = variant.playbackEndSamples;
+    const auto* source = variant.audio->getReadPointer(0);
     const float targetPitch = targetPitchSemitones.load();
     const float maximumPitchChange =
-        static_cast<float>(numSamples / outputSampleRate * 8.0);
+        static_cast<float>(numSamples / outputSampleRate * 16.0);
     voice.currentPitchSemitones += juce::jlimit(
         -maximumPitchChange,
         maximumPitchChange,
@@ -226,17 +349,38 @@ void PhrasePlayer::renderVoice(
         voice.sourceFlushed = true;
 #endif
 
+    // Equal-power (sin) ramps. Two linear ramps summed across a voice
+    // change drop to ~-3 dB at the midpoint for uncorrelated material,
+    // which is exactly the momentary dip heard as a cut at every phrase
+    // boundary; sin/cos pairs keep the summed power flat instead.
+    const auto equalPower = [](float linear) noexcept
+    {
+        return std::sin(juce::MathConstants<float>::halfPi
+            * juce::jlimit(0.0f, 1.0f, linear));
+    };
+
+    const int playbackLength =
+        variant.playbackEndSamples - variant.contentOffsetSamples;
+
     for (int sample = 0; sample < produced; ++sample)
     {
-        const float fadeIn = juce::jlimit(
-            0.0f,
-            1.0f,
+        const float fadeIn = equalPower(
             static_cast<float>(voice.samplesSinceStart) / voice.fadeInLength);
         const float fadeOut = voice.fadeOutRemaining > 0
-            ? static_cast<float>(voice.fadeOutRemaining) / crossfadeSamples
+            ? equalPower(
+                static_cast<float>(voice.fadeOutRemaining) / crossfadeSamples)
             : 1.0f;
+        // Always ramp the tail down, even for variants without an explicit
+        // playback end: running the source buffer dry mid-vowel and simply
+        // resetting the voice is a hard discontinuity.
+        const int remainingSamples =
+            playbackLength - voice.samplesSinceStart;
+        const float edgeFade = equalPower(
+            static_cast<float>(remainingSamples)
+                / std::max(1, endFadeSamples));
         const float value =
-            voice.scratch[static_cast<size_t>(sample)] * fadeIn * fadeOut;
+            voice.scratch[static_cast<size_t>(sample)]
+            * fadeIn * fadeOut * edgeFade;
         outputLeft[sample] += value;
         outputRight[sample] += value;
         ++voice.samplesSinceStart;
