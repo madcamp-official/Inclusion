@@ -463,6 +463,25 @@ int main(int argc, char* argv[])
                 static_cast<int>(ringing.size())),
             "one decaying strum must not retrigger multiple onsets");
     }
+    for (const int blockSize : {256, 480, 1024})
+    {
+        mode1::GuitarOnsetTracker bufferSizeTracker;
+        bufferSizeTracker.prepare(48'000.0);
+        std::vector<float> sizedSilence(
+            static_cast<size_t>(blockSize),
+            0.0f);
+        std::vector<float> sizedAttack(
+            static_cast<size_t>(blockSize),
+            0.08f);
+        bufferSizeTracker.processBlock(
+            sizedSilence.data(),
+            blockSize);
+        passed &= require(
+            bufferSizeTracker.processBlock(
+                sizedAttack.data(),
+                blockSize),
+            "a clear attack should survive device buffer-size changes");
+    }
 
     mode1::GuitarChordTracker chordTracker;
     chordTracker.prepare(48'000.0);

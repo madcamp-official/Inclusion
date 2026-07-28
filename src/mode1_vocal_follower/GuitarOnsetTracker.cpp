@@ -32,27 +32,34 @@ bool GuitarOnsetTracker::processBlock(
     currentRms = static_cast<float>(std::sqrt(sumSquares / numSamples));
     samplesSinceOnset += numSamples;
 
+    const double blockSeconds = numSamples / sampleRate;
+    const float attackRatioForBlock = static_cast<float>(
+        std::exp(attackLogRisePerSecond * blockSeconds));
     const bool refractoryFinished =
         samplesSinceOnset >= refractorySeconds * sampleRate;
     const bool hasFreshAttack =
         previousRms <= 1.0e-5f
-        || currentRms >= previousRms * attackRiseRatio;
+        || currentRms >= previousRms * attackRatioForBlock;
     const bool onset =
         refractoryFinished
         && hasFreshAttack
         && currentRms >= minimumOnsetRms
         && currentRms >= energyBaseline * onsetRatio;
 
-    // Use a slower baseline while the input rises so the attack is not
-    // immediately absorbed into the average.
-    const float coefficient = currentRms > energyBaseline ? 0.01f : 0.08f;
+    // Time-based smoothing keeps onset sensitivity stable when the audio
+    // device changes its callback buffer size.
+    const double timeConstant = currentRms > energyBaseline
+        ? risingBaselineTimeConstantSeconds
+        : fallingBaselineTimeConstantSeconds;
+    const float coefficient = static_cast<float>(
+        1.0 - std::exp(-blockSeconds / timeConstant));
     energyBaseline += coefficient * (currentRms - energyBaseline);
     energyBaseline = std::max(energyBaseline, 1.0e-4f);
 
     if (onset)
     {
-        lastOnsetStrength = currentRms
-            / std::max(previousRms, 1.0e-5f);
+        lastOnsetStrength =
+            currentRms / std::max(previousRms, 1.0e-5f);
         samplesSinceOnset = 0.0;
     }
     previousRms = currentRms;

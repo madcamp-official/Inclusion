@@ -30,7 +30,10 @@ private:
     float lastOnsetStrength = 1.0f;
 
     static constexpr float onsetRatio = 1.6f;
-    static constexpr float attackRiseRatio = 1.22f;
+    static constexpr double attackLogRisePerSecond =
+        18.652276197318684; // log(1.22) / (512 / 48000)
+    static constexpr double risingBaselineTimeConstantSeconds = 1.0613;
+    static constexpr double fallingBaselineTimeConstantSeconds = 0.1279;
     static constexpr float minimumOnsetRms = 0.01f;
     static constexpr float activityThreshold = 0.003f;
     static constexpr double refractorySeconds = 0.280;
