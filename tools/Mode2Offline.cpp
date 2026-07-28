@@ -21,7 +21,10 @@
 //     --trip=0.35      출력 트립 임계
 //     --block=512      블록 크기
 //     --lookahead=21.3 제어 경로와 오디오 경로의 정렬량(ms). 출력 음정 정확도로 스윕해 정한다
-//     --shifter=rubberband|soundtouch|world  피치 시프터 A/B (WORLD는 전체 파일 오프라인 처리)
+//     --shifter=rubberband|soundtouch|world|world-stream  피치 시프터 A/B
+//       world        전체 파일을 한 번에 분석·재합성한다(WORLD 방식의 음질 상한)
+//       world-stream 앱이 실제로 쓰는 스트리밍 WORLD 백엔드. 워커 스레드가 따라올 수
+//                    있어야 결과가 유효하므로 블록을 실시간 속도로 흘려보낸다(녹음 길이만큼 걸린다)
 
 #include <juce_audio_formats/juce_audio_formats.h>
 
@@ -30,10 +33,12 @@
 #include "mode2_guitar_vocoder/WorldVoiceTransformer.h"
 #include "params/Mode2Params.h"
 
+#include <chrono>
 #include <cmath>
 #include <iostream>
 #include <algorithm>
 #include <memory>
+#include <thread>
 #include <vector>
 
 namespace
@@ -54,6 +59,10 @@ namespace
         int blockSize = 512;
         PitchShifterEngine::Backend shifter = PitchShifterEngine::Backend::RubberBand;
         bool useWorld = false;
+        // 스트리밍 WORLD는 별도 워커에서 분석한다. 오프라인 루프가 블록을 최대 속도로
+        // 밀어 넣으면 워커가 못 따라와 출력이 굶어서, 백엔드 잘못이 아닌 이유로 결과가
+        // 나빠진다. 그래서 이 경로만 실시간 속도로 흘린다.
+        bool paceRealTime = false;
         float lookaheadMs = 1000.0f * mode2::params::vocalControlLookaheadSeconds;
     };
 
@@ -92,7 +101,7 @@ int main(int argc, char* argv[])
     {
         std::cout << "usage: Mode2Offline <input.wav> <output.wav> [--glide=N --boost=N --volume=N "
                      "--octave=N --gate=N|off --howlguard=on|off --trip=N --block=N --lookahead=N "
-                     "--shifter=rubberband|soundtouch|world]\n";
+                     "--shifter=rubberband|soundtouch|world|world-stream]\n";
         return 1;
     }
 
@@ -134,6 +143,13 @@ int main(int argc, char* argv[])
             // 재합성해 출력 채널을 덮어쓴다.
             opt.shifter = PitchShifterEngine::Backend::RubberBand;
             opt.useWorld = true;
+            continue;
+        }
+        if (a == "--shifter=world-stream")
+        {
+            opt.shifter = PitchShifterEngine::Backend::World;
+            opt.useWorld = false;
+            opt.paceRealTime = true;
             continue;
         }
         std::cerr << "알 수 없는 옵션: " << argv[i] << "\n";
@@ -201,8 +217,16 @@ int main(int argc, char* argv[])
     std::vector<float> cancelDbs;
     std::vector<float> appliedShiftTrace(static_cast<size_t>(numSamples), 0.0f);
     std::vector<float> absoluteTargetF0Trace(static_cast<size_t>(numSamples), 0.0f);
+    const auto runStart = std::chrono::steady_clock::now();
     for (int pos = 0; pos < numSamples; pos += block)
     {
+        if (opt.paceRealTime)
+        {
+            const auto due = runStart + std::chrono::microseconds(
+                static_cast<long long>(1.0e6 * pos / sampleRate));
+            std::this_thread::sleep_until(due);
+        }
+
         const int n = juce::jmin(block, numSamples - pos);
         controller.processBlock(input.getReadPointer(0, pos),
                                 input.getReadPointer(1, pos),
