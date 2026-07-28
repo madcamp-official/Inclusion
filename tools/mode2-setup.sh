@@ -94,3 +94,15 @@ if [ "$launch" -eq 1 ]; then
     open "build/VocalGuitarApp_artefacts/Debug/Vocal Guitar App.app"
     echo "앱을 실행했습니다. 화면 위쪽 기기 이름이 \"$device_name\"인지 확인하세요."
 fi
+
+# 음소거·볼륨 0 경고는 위쪽 기기 배치 출력에 섞여 있어서 놓치기 쉽다(실제로 놓쳐서
+# "출력이 안 된다"를 앱 문제로 의심하며 한참 찾았다). 맨 끝에 다시 띄운다.
+warnings=$(echo "$layout" | grep '!!' || true)
+if [ -n "$warnings" ]; then
+    echo
+    echo "================ 소리가 안 날 이유가 이미 있습니다 ================"
+    echo "$warnings"
+    echo "시스템 설정 → 사운드에서 그 출력 기기를 골라 음소거를 풀고 볼륨을 올리세요."
+    echo "메뉴 막대 볼륨은 *기본* 출력 기기에만 적용되므로 여기서는 소용없습니다."
+    echo "=================================================================="
+fi
