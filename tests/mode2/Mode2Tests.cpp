@@ -72,7 +72,16 @@ public:
 
     void runTest() override
     {
-        constexpr double sampleRate = 48000.0;
+        // 실제로 쓰는 샘플레이트를 모두 본다. 창 크기는 샘플레이트에 비례해 정해지고
+        // 탐색 경계는 lag(정수 샘플)로 계산되므로, 한 레이트에서 통과해도 다른
+        // 레이트에서 상한이 어긋날 수 있다. 24k는 에어팟 HFP, 44.1k는 맥북 스피커가
+        // 마스터인 통합 기기, 48k는 오디오 인터페이스 기준이다.
+        for (double sampleRate : { 24000.0, 44100.0, 48000.0 })
+            runAtSampleRate(sampleRate);
+    }
+
+    void runAtSampleRate(double sampleRate)
+    {
         constexpr int blockSize = 512;
 
         PitchDetector detector;
@@ -81,7 +90,8 @@ public:
                          mode2::params::scalePitchWindowForSampleRate(
                              mode2::params::vocalPitchWindowSize, sampleRate));
 
-        beginTest(utf8("A2~G5를 옥타브 오류 없이 검출한다"));
+        beginTest(utf8("A2~G5를 옥타브 오류 없이 검출한다 @ ")
+                  + juce::String(sampleRate / 1000.0, 1) + "kHz");
         // A2(110Hz) ~ G5(784Hz). 위쪽 끝이 상한에 걸리면 여기서 -12반음으로 잡힌다.
         for (int midi : { 45, 52, 57, 64, 69, 72, 76, 79 })
         {
