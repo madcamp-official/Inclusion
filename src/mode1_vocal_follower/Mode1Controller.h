@@ -173,6 +173,8 @@ private:
     unsigned int observedManualKeyRevision = 0;
     int pendingPitchShift = 0;
     int pendingPitchShiftCount = 0;
+    int pendingCommittedPhrase = -1;
+    int pendingCommitBlocks = 0;
 };
 
 } // namespace mode1

@@ -35,7 +35,8 @@ public:
     void requestPhrase(
         int phraseIndex,
         float accent = 0.5f,
-        double targetDurationSeconds = 0.0) noexcept;
+        double targetDurationSeconds = 0.0,
+        double transitionSeconds = 0.035) noexcept;
     void setPitchSemitones(float semitones) noexcept
     {
         targetPitchSemitones.store(semitones);
@@ -85,6 +86,7 @@ private:
         int sourcePosition = 0;
         int samplesSinceStart = 0;
         int fadeInLength = 1;
+        int fadeOutLength = 1;
         int fadeOutRemaining = 0;
         bool sourceFlushed = false;
         bool active = false;
@@ -123,6 +125,7 @@ private:
     std::atomic<int> requestedPhraseIndex { -1 };
     std::atomic<float> requestedAccent { 0.5f };
     std::atomic<double> requestedDurationSeconds { 0.0 };
+    std::atomic<double> requestedTransitionSeconds { 0.035 };
     std::atomic<int> currentPhraseIndex { -1 };
     std::atomic<bool> playing { false };
 

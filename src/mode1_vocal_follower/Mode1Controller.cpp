@@ -43,6 +43,8 @@ bool Mode1Controller::loadSongPackage(
     expressionStrength.store(defaultExpression);
     phrasePlayer.setExpressionStrength(defaultExpression);
     lastStartedPhrase.store(-1);
+    pendingCommittedPhrase = -1;
+    pendingCommitBlocks = 0;
     vocalRest.store(false);
     performanceRunning.store(false);
     return true;
@@ -63,6 +65,8 @@ void Mode1Controller::reset() noexcept
     vocalRest.store(false);
     guitarRms.store(0.0f);
     lastStartedPhrase.store(-1);
+    pendingCommittedPhrase = -1;
+    pendingCommitBlocks = 0;
     detectedChordRoot.store(-1);
     detectedChordBass.store(-1);
     detectedChordQuality.store(
@@ -83,6 +87,35 @@ void Mode1Controller::processBlock(
     float* outputRight,
     int numSamples) noexcept
 {
+    // Stage 3 commit window. A reservation lives for one callback before it
+    // becomes audible, so a score-position correction can replace it without
+    // cutting off sound that has already begun. At 48 kHz / 480 samples this
+    // is a bounded 10 ms, not a beat-scale recognition delay.
+    if (pendingCommittedPhrase >= 0 && --pendingCommitBlocks <= 0)
+    {
+        const auto& phrases = songPackage.getPhrases();
+        const int phraseIndex = pendingCommittedPhrase;
+        const auto& phrase = phrases[static_cast<size_t>(phraseIndex)];
+        const double targetDuration =
+            (phrase.sourceEndSeconds - phrase.sourceStartSeconds)
+            / juce::jlimit(0.80, 1.25, scheduler.getTempoScale());
+        double transitionSeconds = 0.035;
+        if (phraseIndex > 0)
+        {
+            const auto& previous =
+                phrases[static_cast<size_t>(phraseIndex - 1)];
+            const double writtenGap =
+                phrase.sourceStartSeconds - previous.sourceEndSeconds;
+            // Explicit breaths/rests must stay open. Connected vowels use a
+            // longer equal-power join; separated boundaries only de-click.
+            transitionSeconds = writtenGap > 0.055 ? 0.006 : 0.035;
+        }
+        phrasePlayer.requestPhrase(
+            phraseIndex, 0.5f, targetDuration, transitionSeconds);
+        lastStartedPhrase.store(phraseIndex);
+        pendingCommittedPhrase = -1;
+    }
+
     const auto keyRevision = manualKeyRevision.load();
     if (keyRevision != observedManualKeyRevision)
     {
@@ -145,16 +178,8 @@ void Mode1Controller::processBlock(
         scheduler.getCurrentChordEventIndex());
     if (phraseToStart >= 0)
     {
-        const auto& phrases = songPackage.getPhrases();
-        const auto& phrase = phrases[static_cast<size_t>(phraseToStart)];
-        // The written mora duration is independent of callback lateness.
-        // This gives the renderer a bounded elastic target while rests remain
-        // represented by the gap after sourceEndSeconds.
-        const double targetDuration =
-            (phrase.sourceEndSeconds - phrase.sourceStartSeconds)
-            / juce::jlimit(0.80, 1.25, scheduler.getTempoScale());
-        phrasePlayer.requestPhrase(phraseToStart, 0.5f, targetDuration);
-        lastStartedPhrase.store(phraseToStart);
+        pendingCommittedPhrase = phraseToStart;
+        pendingCommitBlocks = 1;
     }
 
     phrasePlayer.setPitchSemitones(
@@ -185,6 +210,8 @@ void Mode1Controller::startAutomaticPlayback() noexcept
     scheduler.reset();
     phrasePlayer.stop();
     lastStartedPhrase.store(-1);
+    pendingCommittedPhrase = -1;
+    pendingCommitBlocks = 0;
     lastOnset.store(false);
     vocalRest.store(false);
     manualTrigger.store(false);
@@ -201,6 +228,8 @@ void Mode1Controller::stopAutomaticPlayback() noexcept
     scheduler.reset();
     phrasePlayer.stop();
     lastStartedPhrase.store(-1);
+    pendingCommittedPhrase = -1;
+    pendingCommitBlocks = 0;
     lastOnset.store(false);
     vocalRest.store(false);
     manualTrigger.store(false);
@@ -224,6 +253,8 @@ void Mode1Controller::restartPerformance() noexcept
     manualTrigger.store(false);
     pendingVirtualChordRoot.store(-1);
     lastStartedPhrase.store(-1);
+    pendingCommittedPhrase = -1;
+    pendingCommitBlocks = 0;
     lastOnset.store(false);
     vocalRest.store(false);
     detectedChordRoot.store(-1);
@@ -246,6 +277,8 @@ void Mode1Controller::stopPerformance() noexcept
     manualTrigger.store(false);
     pendingVirtualChordRoot.store(-1);
     lastStartedPhrase.store(-1);
+    pendingCommittedPhrase = -1;
+    pendingCommitBlocks = 0;
     lastOnset.store(false);
     vocalRest.store(false);
     currentChordEventForUi.store(-1);

@@ -203,10 +203,13 @@ void PhrasePlayer::clear()
 void PhrasePlayer::requestPhrase(
     int phraseIndex,
     float accent,
-    double targetDurationSeconds) noexcept
+    double targetDurationSeconds,
+    double transitionSeconds) noexcept
 {
     requestedAccent.store(juce::jlimit(0.0f, 1.0f, accent));
     requestedDurationSeconds.store(std::max(0.0, targetDurationSeconds));
+    requestedTransitionSeconds.store(
+        juce::jlimit(0.004, 0.060, transitionSeconds));
     requestedPhraseIndex.store(phraseIndex);
 }
 
@@ -228,6 +231,7 @@ void PhrasePlayer::resetVoice(PlaybackVoice& voice) noexcept
     voice.sourcePosition = 0;
     voice.samplesSinceStart = 0;
     voice.fadeInLength = 1;
+    voice.fadeOutLength = 1;
     voice.fadeOutRemaining = 0;
     voice.sourceFlushed = false;
     voice.active = false;
@@ -251,9 +255,17 @@ void PhrasePlayer::startRequestedPhrase(int phraseIndex) noexcept
 
     const bool hasPreviousVoice =
         newestVoiceIndex >= 0 && voices[static_cast<size_t>(newestVoiceIndex)].active;
+    const int requestedTransitionSamples = std::max(
+        1,
+        juce::roundToInt(
+            requestedTransitionSeconds.load() * outputSampleRate));
     if (hasPreviousVoice)
+    {
         voices[static_cast<size_t>(newestVoiceIndex)].fadeOutRemaining =
-            crossfadeSamples;
+            requestedTransitionSamples;
+        voices[static_cast<size_t>(newestVoiceIndex)].fadeOutLength =
+            requestedTransitionSamples;
+    }
 
     const int nextVoiceIndex = newestVoiceIndex == 0 ? 1 : 0;
     auto& voice = voices[static_cast<size_t>(nextVoiceIndex)];
@@ -279,7 +291,8 @@ void PhrasePlayer::startRequestedPhrase(int phraseIndex) noexcept
     currentExpressionStrength.store(variant.strength);
     voice.phraseIndex = phraseIndex;
     voice.sourcePosition = variant.contentOffsetSamples;
-    voice.fadeInLength = hasPreviousVoice ? crossfadeSamples : fadeInSamples;
+    voice.fadeInLength =
+        hasPreviousVoice ? requestedTransitionSamples : fadeInSamples;
     voice.currentPitchSemitones = targetPitchSemitones.load();
     // Subtle range (+/-8%): audible dynamics without pumping or drawing
     // attention to itself between neighbouring phrases.
@@ -403,7 +416,8 @@ void PhrasePlayer::renderVoice(
             static_cast<float>(voice.samplesSinceStart) / voice.fadeInLength);
         const float fadeOut = voice.fadeOutRemaining > 0
             ? equalPower(
-                static_cast<float>(voice.fadeOutRemaining) / crossfadeSamples)
+                static_cast<float>(voice.fadeOutRemaining)
+                    / std::max(1, voice.fadeOutLength))
             : 1.0f;
         // Always ramp the tail down, even for variants without an explicit
         // playback end: running the source buffer dry mid-vowel and simply
