@@ -75,6 +75,8 @@ private:
     int tempoObservationCount = 0;
     int tempoAnchorEventIndex = -1;
     double tempoAnchorPerformanceSeconds = 0.0;
+    int performanceOriginEventIndex = -1;
+    double performanceOriginSeconds = 0.0;
     int recoveredSkippedChordCount = 0;
     int expiredPhraseCount = 0;
     double guitarVocalLeadSeconds = 0.10;

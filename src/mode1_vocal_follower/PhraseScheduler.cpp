@@ -36,6 +36,8 @@ void PhraseScheduler::reset() noexcept
     tempoObservationCount = 0;
     tempoAnchorEventIndex = -1;
     tempoAnchorPerformanceSeconds = 0.0;
+    performanceOriginEventIndex = -1;
+    performanceOriginSeconds = 0.0;
     recoveredSkippedChordCount = 0;
     expiredPhraseCount = 0;
 }
@@ -107,6 +109,30 @@ int PhraseScheduler::chooseChordEventForOnset(
         - currentScoreTime;
     const double nextPrediction =
         nextScoreDelta / std::max(0.65, tempoScale);
+    if (song->hasTabTracking()
+        && nextPhraseIndex == 0
+        && performanceOriginEventIndex >= 0)
+    {
+        const double scoreFromOrigin =
+            timeline[static_cast<size_t>(nextChordEventIndex)].startSeconds
+            - timeline[static_cast<size_t>(
+                performanceOriginEventIndex)].startSeconds;
+        const double phaseTempo = juce::jlimit(
+            0.90,
+            1.10,
+            tempoScale);
+        const double expectedFromOrigin =
+            scoreFromOrigin / phaseTempo;
+        const double performedFromOrigin =
+            performanceTimeSeconds - performanceOriginSeconds;
+        const double phaseEarlyTolerance = juce::jlimit(
+            0.08,
+            0.14,
+            beatRealSeconds * 0.20);
+        if (performedFromOrigin
+            < expectedFromOrigin - phaseEarlyTolerance)
+            return -1;
+    }
     const bool strongBoundaryPrediction =
         nextScoreDelta >= scoreBeatSeconds() * 2.0
         && onsetStrength >= 3.0f
@@ -194,7 +220,10 @@ void PhraseScheduler::updateTempoEstimate(int matchedEventIndex) noexcept
         return;
 
     const double smoothing = song->hasTabTracking()
-        ? (tempoObservationCount < 4 ? 0.16 : 0.08)
+        ? (
+            observation > tempoScale
+                ? 0.04
+                : 0.08)
         : (tempoObservationCount < 4 ? 0.32 : 0.16);
     tempoScale = juce::jlimit(
         0.80,
@@ -237,6 +266,11 @@ int PhraseScheduler::advanceChordCursor(
     }
 
     currentChordEventIndex = matchedEventIndex;
+    if (performanceOriginEventIndex < 0)
+    {
+        performanceOriginEventIndex = matchedEventIndex;
+        performanceOriginSeconds = performanceTimeSeconds;
+    }
     currentChordPerformanceStartSeconds = performanceTimeSeconds;
     const auto& matchedEvent =
         song->getChordTimeline()[static_cast<size_t>(matchedEventIndex)];

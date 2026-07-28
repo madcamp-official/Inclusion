@@ -14,7 +14,7 @@ public:
     void setArpeggioMode(bool enabled) noexcept
     {
         arpeggioMode = enabled;
-        refractorySeconds = enabled ? 0.250 : 0.280;
+        refractorySeconds = enabled ? 0.225 : 0.280;
     }
 
     bool processBlock(const float* guitarInput, int numSamples) noexcept;
