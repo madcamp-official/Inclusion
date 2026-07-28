@@ -60,6 +60,61 @@ public:
 
 static CorrectionCalculatorTests correctionCalculatorTests;
 
+// 목소리 탐색 범위가 노래하는 음역을 덮는지 지킨다.
+//
+// 상한이 실제로 부르는 음보다 낮으면 진짜 피크가 탐색 밖이 되고 배주기 피크만 남아
+// "한 옥타브 아래"로 확신 있게 오검출한다. 출력은 목표 - 추정 보컬로 시프트하므로
+// 그만큼 출력이 한 옥타브 높게 나간다. 신뢰도가 1.00으로 나와서 게이트로도 못 막는다.
+class VocalPitchRangeTests : public juce::UnitTest
+{
+public:
+    VocalPitchRangeTests() : juce::UnitTest("VocalPitchRange") {}
+
+    void runTest() override
+    {
+        constexpr double sampleRate = 48000.0;
+        constexpr int blockSize = 512;
+
+        PitchDetector detector;
+        detector.prepare(sampleRate, mode2::params::vocalPitchMinFrequencyHz,
+                         mode2::params::vocalPitchMaxFrequencyHz,
+                         mode2::params::scalePitchWindowForSampleRate(
+                             mode2::params::vocalPitchWindowSize, sampleRate));
+
+        beginTest(utf8("A2~G5를 옥타브 오류 없이 검출한다"));
+        // A2(110Hz) ~ G5(784Hz). 위쪽 끝이 상한에 걸리면 여기서 -12반음으로 잡힌다.
+        for (int midi : { 45, 52, 57, 64, 69, 72, 76, 79 })
+        {
+            detector.reset();
+            const double f0 = 440.0 * std::pow(2.0, (midi - 69) / 12.0);
+
+            PitchDetector::Result result;
+            std::vector<float> block(blockSize, 0.0f);
+            int sample = 0;
+            for (int b = 0; b < 8; ++b)
+            {
+                for (int i = 0; i < blockSize; ++i, ++sample)
+                {
+                    const double t = sample / sampleRate;
+                    // 배음이 있는 목소리에 가깝게. 순수 사인파는 실제보다 쉬운 신호다.
+                    block[static_cast<size_t>(i)] = static_cast<float>(
+                        0.3 * (std::sin(2.0 * juce::MathConstants<double>::pi * f0 * t)
+                               + 0.6 * std::sin(4.0 * juce::MathConstants<double>::pi * f0 * t)
+                               + 0.35 * std::sin(6.0 * juce::MathConstants<double>::pi * f0 * t)));
+                }
+                result = detector.processBlock(block.data(), blockSize);
+            }
+
+            expect(result.valid, utf8("검출 실패: MIDI ") + juce::String(midi));
+            if (result.valid)
+                expectWithinAbsoluteError(result.midiFloat, static_cast<float>(midi), 1.0f,
+                                          utf8("MIDI ") + juce::String(midi) + utf8(" 오검출"));
+        }
+    }
+};
+
+static VocalPitchRangeTests vocalPitchRangeTests;
+
 class PitchStabilizerTests : public juce::UnitTest
 {
 public:
