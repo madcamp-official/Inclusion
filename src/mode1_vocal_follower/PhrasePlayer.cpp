@@ -200,8 +200,9 @@ void PhrasePlayer::clear()
     currentBank.reset();
 }
 
-void PhrasePlayer::requestPhrase(int phraseIndex) noexcept
+void PhrasePlayer::requestPhrase(int phraseIndex, float accent) noexcept
 {
+    requestedAccent.store(juce::jlimit(0.0f, 1.0f, accent));
     requestedPhraseIndex.store(phraseIndex);
 }
 
@@ -227,6 +228,7 @@ void PhrasePlayer::resetVoice(PlaybackVoice& voice) noexcept
     voice.sourceFlushed = false;
     voice.active = false;
     voice.currentPitchSemitones = 0.0f;
+    voice.accentGain = 1.0f;
 #if HAVE_SOUNDTOUCH
     voice.soundTouch.clear();
 #endif
@@ -272,6 +274,9 @@ void PhrasePlayer::startRequestedPhrase(int phraseIndex) noexcept
     voice.sourcePosition = variant.contentOffsetSamples;
     voice.fadeInLength = hasPreviousVoice ? crossfadeSamples : fadeInSamples;
     voice.currentPitchSemitones = targetPitchSemitones.load();
+    // Subtle range (+/-8%): audible dynamics without pumping or drawing
+    // attention to itself between neighbouring phrases.
+    voice.accentGain = 0.92f + 0.16f * requestedAccent.load();
     voice.active = true;
 #if HAVE_SOUNDTOUCH
     voice.soundTouch.setPitchSemiTones(voice.currentPitchSemitones);
@@ -380,7 +385,7 @@ void PhrasePlayer::renderVoice(
                 / std::max(1, endFadeSamples));
         const float value =
             voice.scratch[static_cast<size_t>(sample)]
-            * fadeIn * fadeOut * edgeFade;
+            * fadeIn * fadeOut * edgeFade * voice.accentGain;
         outputLeft[sample] += value;
         outputRight[sample] += value;
         ++voice.samplesSinceStart;

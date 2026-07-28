@@ -16,6 +16,8 @@ void GuitarOnsetTracker::reset() noexcept
     currentRms = 0.0f;
     previousRms = 0.0f;
     lastOnsetStrength = 1.0f;
+    onsetRmsBaseline = 0.02f;
+    lastOnsetAccent = 0.5f;
 }
 
 bool GuitarOnsetTracker::processBlock(
@@ -65,6 +67,15 @@ bool GuitarOnsetTracker::processBlock(
     {
         lastOnsetStrength =
             currentRms / std::max(previousRms, 1.0e-5f);
+
+        // Normalize this strum's loudness against a slow-moving average of
+        // past onsets rather than a fixed threshold, so the accent tracks
+        // the player's own dynamics instead of absolute input level.
+        const float ratio = currentRms / std::max(onsetRmsBaseline, 1.0e-4f);
+        lastOnsetAccent = std::clamp((ratio - 0.6f) / 1.0f, 0.0f, 1.0f);
+        constexpr float baselineSmoothing = 0.12f;
+        onsetRmsBaseline += baselineSmoothing * (currentRms - onsetRmsBaseline);
+
         samplesSinceOnset = 0.0;
     }
     previousRms = currentRms;
