@@ -1,5 +1,7 @@
 build/
 out/
+output/
+tmp/
 cmake-build-*/
 .vs/
 .vscode/
