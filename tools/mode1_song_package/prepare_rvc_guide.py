@@ -127,6 +127,8 @@ def adapt_f0(
     f0: np.ndarray,
     shift: int,
     vibrato: dict,
+    source_expression_ratio: float,
+    user_vibrato_mix: float,
 ) -> np.ndarray:
     voiced = f0 > 0
     result = np.zeros_like(f0)
@@ -136,7 +138,11 @@ def adapt_f0(
     )
     # Suppress fast source-singer fluctuations while preserving note motion.
     trend = median_filter(cents, size=31, mode="nearest")
-    softened = trend + 0.18 * (cents - trend) + shift * 100.0
+    softened = (
+        trend
+        + source_expression_ratio * (cents - trend)
+        + shift * 100.0
+    )
     rate = vibrato["rate_hz"]
     depth = vibrato["depth_cents_rms"] * np.sqrt(2.0)
     if vibrato["confidence"] < 0.12:
@@ -146,9 +152,33 @@ def adapt_f0(
             continue
         local = np.arange(end - start) / 200.0
         fade = np.clip((local - 0.35) / 0.25, 0.0, 1.0)
-        softened[start:end] += depth * fade * np.sin(2.0 * np.pi * rate * local)
+        softened[start:end] += (
+            depth
+            * user_vibrato_mix
+            * fade
+            * np.sin(2.0 * np.pi * rate * local)
+        )
     result[voiced] = 2.0 ** (softened[voiced] / 1200.0)
     return result
+
+
+def style_parameters(strength: int) -> dict:
+    value = float(np.clip(strength, 0, 100))
+    if value <= 25.0:
+        source_expression = 0.05 + (0.18 - 0.05) * value / 25.0
+        user_vibrato_mix = 1.0
+        high_note_reduction = 1.0 + 0.2 * (25.0 - value) / 25.0
+    else:
+        source_mix = (value - 25.0) / 75.0
+        source_expression = 0.18 + (1.0 - 0.18) * source_mix
+        user_vibrato_mix = 1.0 - source_mix
+        high_note_reduction = 1.0 - source_mix
+    return {
+        "strength": int(value),
+        "source_micro_expression_retained_ratio": round(source_expression, 4),
+        "user_vibrato_mix": round(user_vibrato_mix, 4),
+        "high_note_reduction_mix": round(high_note_reduction, 4),
+    }
 
 
 def main() -> None:
@@ -157,6 +187,11 @@ def main() -> None:
     parser.add_argument("--source-vocal", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--key-shift", type=int)
+    parser.add_argument(
+        "--style-strengths",
+        default="25",
+        help="Comma-separated source-expression strengths, e.g. 0,25,50,75,100",
+    )
     args = parser.parse_args()
     output_dir = args.output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -173,12 +208,6 @@ def main() -> None:
     recommended_shift, candidates = select_key_shift(user_pitch, source_pitch)
     key_shift = args.key_shift if args.key_shift is not None else recommended_shift
 
-    adapted_f0 = adapt_f0(source_f0, key_shift, user_vibrato)
-    prepared = pyworld.synthesize(
-        adapted_f0, source_sp, source_ap, source_sr,
-        frame_period=FRAME_PERIOD_MS,
-    )
-
     source_rms = rms_curve(source_audio, source_sr, len(source_f0))
     source_db = librosa.amplitude_to_db(np.maximum(source_rms, 1e-7), ref=1.0)
     source_dynamic = max(source_energy["dynamic_range_db"], 1.0)
@@ -187,24 +216,6 @@ def main() -> None:
     target_db = source_energy["db_median"] + (
         source_db - source_energy["db_median"]
     ) * ratio
-    adapted_midi = np.zeros_like(adapted_f0)
-    voiced = adapted_f0 > 0
-    adapted_midi[voiced] = librosa.hz_to_midi(adapted_f0[voiced])
-    high_excess = np.maximum(0.0, adapted_midi - user_pitch["midi_safe_high"])
-    target_db -= np.minimum(6.0, high_excess * 0.8)
-    gain_frames = librosa.db_to_amplitude(target_db - source_db)
-    gain_samples = np.interp(
-        np.linspace(0.0, 1.0, len(prepared)),
-        np.linspace(0.0, 1.0, len(gain_frames)),
-        gain_frames,
-    )
-    prepared *= np.clip(gain_samples, 0.35, 1.8)
-    peak = float(np.max(np.abs(prepared)))
-    if peak > 0.98:
-        prepared *= 0.98 / peak
-
-    prepared_path = output_dir / "rvc_input_style_adapted.wav"
-    sf.write(prepared_path, prepared, source_sr, subtype="PCM_24")
     profile = {
         "schema_version": 1,
         "source_file": str(args.user_voice.resolve()),
@@ -225,46 +236,129 @@ def main() -> None:
             "type": "above_comfortable_range",
             "semitones": round(shifted_high - user_pitch["midi_safe_high"], 2),
         })
-    plan = {
-        "schema_version": 1,
-        "source_vocal": str(args.source_vocal.resolve()),
-        "prepared_rvc_input": str(prepared_path),
-        "source_pitch": source_pitch,
-        "base_key_shift": key_shift,
-        "recommended_base_key_shift": recommended_shift,
-        "candidate_shifts": candidates,
-        "pitch_processing": {
-            "source_micro_expression_retained_ratio": 0.18,
-            "user_vibrato_applied": True,
-        },
-        "energy_processing": {
-            "dynamic_range_ratio": round(ratio, 3),
-            "high_note_reduction_db_per_semitone": 0.8,
-            "maximum_high_note_reduction_db": 6.0,
-        },
-        "range_warnings": warnings,
-    }
     (output_dir / "voice_profile.json").write_text(
         json.dumps(profile, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
-    (output_dir / "style_plan.json").write_text(
-        json.dumps(plan, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
-    np.savetxt(
-        output_dir / "adapted_f0.csv",
-        np.column_stack([
-            np.arange(len(adapted_f0)) * FRAME_PERIOD_MS / 1000.0,
+
+    strengths = sorted({
+        int(item.strip())
+        for item in args.style_strengths.split(",")
+        if item.strip()
+    })
+    variants = []
+    for strength in strengths:
+        parameters = style_parameters(strength)
+        adapted_f0 = adapt_f0(
             source_f0,
-            adapted_f0,
-        ]),
-        delimiter=",",
-        header="time_sec,source_f0_hz,adapted_f0_hz",
-        comments="",
+            key_shift,
+            user_vibrato,
+            parameters["source_micro_expression_retained_ratio"],
+            parameters["user_vibrato_mix"],
+        )
+        prepared = pyworld.synthesize(
+            adapted_f0, source_sp, source_ap, source_sr,
+            frame_period=FRAME_PERIOD_MS,
+        )
+        adapted_midi = np.zeros_like(adapted_f0)
+        voiced = adapted_f0 > 0
+        adapted_midi[voiced] = librosa.hz_to_midi(adapted_f0[voiced])
+        high_excess = np.maximum(
+            0.0, adapted_midi - user_pitch["midi_safe_high"]
+        )
+        target_variant_db = target_db - np.minimum(
+            6.0,
+            high_excess
+            * 0.8
+            * parameters["high_note_reduction_mix"],
+        )
+        gain_frames = librosa.db_to_amplitude(target_variant_db - source_db)
+        gain_samples = np.interp(
+            np.linspace(0.0, 1.0, len(prepared)),
+            np.linspace(0.0, 1.0, len(gain_frames)),
+            gain_frames,
+        )
+        prepared *= np.clip(gain_samples, 0.35, 1.8)
+        peak = float(np.max(np.abs(prepared)))
+        if peak > 0.98:
+            prepared *= 0.98 / peak
+
+        prepared_path = output_dir / f"rvc_input_style_{strength:03d}.wav"
+        plan_path = output_dir / f"style_plan_{strength:03d}.json"
+        f0_path = output_dir / f"adapted_f0_{strength:03d}.csv"
+        sf.write(prepared_path, prepared, source_sr, subtype="PCM_24")
+        plan = {
+            "schema_version": 2,
+            "style_strength": strength,
+            "source_vocal": str(args.source_vocal.resolve()),
+            "prepared_rvc_input": str(prepared_path),
+            "source_pitch": source_pitch,
+            "base_key_shift": key_shift,
+            "recommended_base_key_shift": recommended_shift,
+            "candidate_shifts": candidates,
+            "pitch_processing": parameters,
+            "energy_processing": {
+                "dynamic_range_ratio": round(ratio, 3),
+                "high_note_reduction_db_per_semitone": 0.8,
+                "maximum_high_note_reduction_db": 6.0,
+            },
+            "range_warnings": warnings,
+        }
+        plan_path.write_text(
+            json.dumps(plan, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        np.savetxt(
+            f0_path,
+            np.column_stack([
+                np.arange(len(adapted_f0)) * FRAME_PERIOD_MS / 1000.0,
+                source_f0,
+                adapted_f0,
+            ]),
+            delimiter=",",
+            header="time_sec,source_f0_hz,adapted_f0_hz",
+            comments="",
+        )
+        variants.append({
+            "strength": strength,
+            "prepared_rvc_input": str(prepared_path),
+            "style_plan": str(plan_path),
+        })
+        if strength == 25:
+            sf.write(
+                output_dir / "rvc_input_style_adapted.wav",
+                prepared,
+                source_sr,
+                subtype="PCM_24",
+            )
+            (output_dir / "style_plan.json").write_text(
+                json.dumps(plan, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            np.savetxt(
+                output_dir / "adapted_f0.csv",
+                np.column_stack([
+                    np.arange(len(adapted_f0)) * FRAME_PERIOD_MS / 1000.0,
+                    source_f0,
+                    adapted_f0,
+                ]),
+                delimiter=",",
+                header="time_sec,source_f0_hz,adapted_f0_hz",
+                comments="",
+            )
+    manifest_path = output_dir / "style_variants.json"
+    manifest_path.write_text(
+        json.dumps({
+            "schema_version": 1,
+            "default_strength": 25,
+            "base_key_shift": key_shift,
+            "variants": variants,
+        }, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
     )
     print(json.dumps({
-        "prepared_rvc_input": str(prepared_path),
         "voice_profile": str(output_dir / "voice_profile.json"),
-        "style_plan": str(output_dir / "style_plan.json"),
+        "manifest": str(manifest_path),
+        "variants": variants,
         "base_key_shift": key_shift,
         "warnings": warnings,
     }, ensure_ascii=False, indent=2))

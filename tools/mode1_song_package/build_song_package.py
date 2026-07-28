@@ -187,8 +187,16 @@ def split_line_into_micro_spans(
     line: dict,
     minimum_sec: float = 0.55,
     maximum_sec: float = 1.20,
+    merge_tail_below_sec: float = 0.32,
+    one_span_per_note: bool = False,
 ) -> list[dict]:
-    """Group score notes into short, lyric-safe playback spans."""
+    """Group score notes into short, lyric-safe playback spans.
+
+    Each score note already corresponds to roughly one mora, so
+    one_span_per_note=True yields the finest segmentation the score data
+    supports. Otherwise consecutive moras are grouped into ~minimum_sec to
+    maximum_sec spans, trading responsiveness for fewer splice points.
+    """
     notes = line["notes"]
     if not notes:
         return [
@@ -199,6 +207,9 @@ def split_line_into_micro_spans(
                 "lyrics": line["text"],
             }
         ]
+
+    if one_span_per_note:
+        return [make_micro_span(line, [note]) for note in notes]
 
     spans: list[dict] = []
     group_start = 0
@@ -221,9 +232,9 @@ def split_line_into_micro_spans(
     spans.append(make_micro_span(line, notes[group_start:]))
 
     # Avoid tiny tails by merging them into the previous span.
-    if len(spans) >= 2:
+    if len(spans) >= 2 and merge_tail_below_sec > 0.0:
         tail_duration = spans[-1]["end_sec"] - spans[-1]["start_sec"]
-        if tail_duration < 0.32:
+        if tail_duration < merge_tail_below_sec:
             spans[-2]["end_sec"] = spans[-1]["end_sec"]
             spans[-2]["notes"].extend(spans[-1]["notes"])
             spans[-2]["lyrics"] += spans[-1]["lyrics"]
@@ -332,7 +343,13 @@ def build_package(args: argparse.Namespace) -> Path:
     previous_micro_end = 0.0
     micro_index = 0
     for line in score["lines"]:
-        for span in split_line_into_micro_spans(line):
+        for span in split_line_into_micro_spans(
+            line,
+            minimum_sec=args.micro_minimum_sec,
+            maximum_sec=args.micro_maximum_sec,
+            merge_tail_below_sec=args.micro_merge_tail_below_sec,
+            one_span_per_note=args.mora_granularity,
+        ):
             source_start = map_time(
                 float(span["start_sec"]),
                 guide_seconds,
@@ -439,6 +456,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--margin-sec", type=float, default=0.12)
     parser.add_argument("--micro-margin-sec", type=float, default=0.08)
+    # Micro-phrase segmentation granularity. Score notes are already about
+    # one mora each, so 0/0 gives one micro-phrase per mora; the defaults
+    # group them into ~0.55-1.2 s spans instead.
+    parser.add_argument("--micro-minimum-sec", type=float, default=0.55)
+    parser.add_argument("--micro-maximum-sec", type=float, default=1.20)
+    parser.add_argument(
+        "--micro-merge-tail-below-sec", type=float, default=0.32
+    )
+    parser.add_argument(
+        "--mora-granularity",
+        action="store_true",
+        help=(
+            "Emit one micro-phrase per score note (mora) instead of grouping "
+            "notes into longer spans."
+        ),
+    )
     return parser.parse_args()
 
 
