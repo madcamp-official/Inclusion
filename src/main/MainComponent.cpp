@@ -305,6 +305,7 @@ void MainComponent::prepareToPlay(int samplesPerBlockExpected, double sampleRate
     mode2Controller.prepare(sampleRate, samplesPerBlockExpected);
     guitarInputScratch.assign(static_cast<size_t>(samplesPerBlockExpected), 0.0f);
     vocalInputScratch.assign(static_cast<size_t>(samplesPerBlockExpected), 0.0f);
+    roomInputScratch.assign(static_cast<size_t>(samplesPerBlockExpected), 0.0f);
 }
 
 void MainComponent::getNextAudioBlock(const juce::AudioSourceChannelInfo& bufferToFill)
@@ -321,12 +322,17 @@ void MainComponent::getNextAudioBlock(const juce::AudioSourceChannelInfo& buffer
     const int numSamples = bufferToFill.numSamples;
     const int startSample = bufferToFill.startSample;
 
-    if (static_cast<int>(guitarInputScratch.size()) < numSamples)
+    // 세 버퍼를 각각 확인한다. 예전에는 기타 버퍼 하나만 보고 셋을 함께 늘렸는데, 방 마이크
+    // 버퍼를 prepareToPlay에서 할당하는 것을 빠뜨리자 이 검사가 통과해 버려(기타 버퍼는 이미
+    // 충분했다) 크기 0인 벡터에 블록을 복사하고 세그폴트가 났다.
+    const auto ensure = [numSamples](std::vector<float>& v)
     {
-        guitarInputScratch.resize(static_cast<size_t>(numSamples));
-        vocalInputScratch.resize(static_cast<size_t>(numSamples));
-        roomInputScratch.resize(static_cast<size_t>(numSamples));
-    }
+        if (static_cast<int>(v.size()) < numSamples)
+            v.resize(static_cast<size_t>(numSamples), 0.0f);
+    };
+    ensure(guitarInputScratch);
+    ensure(vocalInputScratch);
+    ensure(roomInputScratch);
 
     // 뒤에서 outL/outR로 같은 버퍼 채널에 덮어쓰므로, 입력을 먼저 스크래치로 복사해 둔다.
     const int lastChannel = buffer.getNumChannels() - 1;
