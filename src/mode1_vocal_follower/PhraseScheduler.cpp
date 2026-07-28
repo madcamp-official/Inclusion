@@ -182,7 +182,10 @@ void PhraseScheduler::updateTempoEstimate(int matchedEventIndex) noexcept
     // feel. Using those short intervals as a BPM observation makes repeated
     // strums look like a much faster song. Accumulate at least two beats so
     // the estimate represents musical tempo rather than articulation.
-    if (scoreDelta < scoreBeatSeconds() * 2.0
+    const double minimumTempoObservationBeats =
+        song->hasTabTracking() ? 4.0 : 2.0;
+    if (scoreDelta
+            < scoreBeatSeconds() * minimumTempoObservationBeats
         || elapsedSeconds <= 0.10)
         return;
 
@@ -190,7 +193,9 @@ void PhraseScheduler::updateTempoEstimate(int matchedEventIndex) noexcept
     if (observation < 0.75 || observation > 1.30)
         return;
 
-    const double smoothing = tempoObservationCount < 4 ? 0.32 : 0.16;
+    const double smoothing = song->hasTabTracking()
+        ? (tempoObservationCount < 4 ? 0.16 : 0.08)
+        : (tempoObservationCount < 4 ? 0.32 : 0.16);
     tempoScale = juce::jlimit(
         0.80,
         1.25,
@@ -299,6 +304,10 @@ int PhraseScheduler::startDueGuitarPhrase() noexcept
     if (lastStartedPhraseIndex >= 0
         && phraseToStart > lastStartedPhraseIndex)
     {
+        if (performanceTimeSeconds
+                - lastPhraseTriggerPerformanceSeconds
+            < 0.050)
+            return -1;
         const auto& lastPhrase =
             phrases[static_cast<size_t>(lastStartedPhraseIndex)];
         const auto& duePhrase =

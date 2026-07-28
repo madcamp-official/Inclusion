@@ -33,8 +33,12 @@ bool GuitarOnsetTracker::processBlock(
     samplesSinceOnset += numSamples;
 
     const double blockSeconds = numSamples / sampleRate;
+    const double attackLogRise =
+        arpeggioMode
+            ? arpeggioAttackLogRisePerSecond
+            : attackLogRisePerSecond;
     const float attackRatioForBlock = static_cast<float>(
-        std::exp(attackLogRisePerSecond * blockSeconds));
+        std::exp(attackLogRise * blockSeconds));
     const bool refractoryFinished =
         samplesSinceOnset >= refractorySeconds * sampleRate;
     const bool hasFreshAttack =
@@ -44,7 +48,8 @@ bool GuitarOnsetTracker::processBlock(
         refractoryFinished
         && hasFreshAttack
         && currentRms >= minimumOnsetRms
-        && currentRms >= energyBaseline * onsetRatio;
+        && currentRms >= energyBaseline
+            * (arpeggioMode ? arpeggioOnsetRatio : onsetRatio);
 
     // Time-based smoothing keeps onset sensitivity stable when the audio
     // device changes its callback buffer size.

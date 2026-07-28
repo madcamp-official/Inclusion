@@ -33,6 +33,7 @@ bool Mode1Controller::loadSongPackage(
     }
 
     scheduler.setSong(&songPackage);
+    onsetTracker.setArpeggioMode(songPackage.hasTabTracking());
     manualKeyShift.store(0);
     selectedKeyAnchor.store(songPackage.getBaseKeyShift());
     performanceKeyOffset.store(0);

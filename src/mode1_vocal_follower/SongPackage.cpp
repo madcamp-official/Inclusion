@@ -161,6 +161,47 @@ bool SongPackage::loadFromFile(const juce::File& packageFile, juce::String& erro
             });
     }
 
+    if (const auto* tabObject =
+            rootObject->getProperty("tab_tracking").getDynamicObject())
+    {
+        if (const auto* hintArray =
+                tabObject->getProperty("chord_hints").getArray())
+        {
+            tabChordHints.reserve(static_cast<size_t>(hintArray->size()));
+            for (const auto& hintValue : *hintArray)
+            {
+                const auto* hintObject = hintValue.getDynamicObject();
+                if (hintObject == nullptr)
+                    continue;
+                const int chordEventIndex = static_cast<int>(
+                    numberProperty(hintObject, "chord_event_index"));
+                if (chordEventIndex < 0
+                    || chordEventIndex >= static_cast<int>(
+                        chordTimeline.size()))
+                    continue;
+                tabChordHints.push_back({
+                    chordEventIndex,
+                    static_cast<int>(
+                        numberProperty(hintObject, "pitch_class_mask")),
+                    static_cast<int>(
+                        numberProperty(
+                            hintObject,
+                            "bass_pitch_class_mask")),
+                    static_cast<int>(
+                        numberProperty(hintObject, "note_group_count")),
+                    numberProperty(hintObject, "arpeggio_likelihood"),
+                });
+            }
+            std::sort(
+                tabChordHints.begin(),
+                tabChordHints.end(),
+                [](const TabChordHint& left, const TabChordHint& right)
+                {
+                    return left.chordEventIndex < right.chordEventIndex;
+                });
+        }
+    }
+
     std::vector<Phrase> loadedPhrases;
     loadedPhrases.reserve(static_cast<size_t>(phraseArray->size()));
 
@@ -370,7 +411,25 @@ void SongPackage::clear()
     manualKeyShiftMinimum = -6;
     manualKeyShiftMaximum = 6;
     chordTimeline.clear();
+    tabChordHints.clear();
     phrases.clear();
+}
+
+const TabChordHint* SongPackage::getTabChordHint(
+    int chordEventIndex) const noexcept
+{
+    const auto match = std::lower_bound(
+        tabChordHints.begin(),
+        tabChordHints.end(),
+        chordEventIndex,
+        [](const TabChordHint& hint, int index)
+        {
+            return hint.chordEventIndex < index;
+        });
+    return match != tabChordHints.end()
+            && match->chordEventIndex == chordEventIndex
+        ? &*match
+        : nullptr;
 }
 
 int SongPackage::getNearestKeyAnchor(int targetKeyShift) const noexcept

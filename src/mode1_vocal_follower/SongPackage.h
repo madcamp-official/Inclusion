@@ -16,6 +16,15 @@ struct ChordEvent
     juce::String rawChord;
 };
 
+struct TabChordHint
+{
+    int chordEventIndex = -1;
+    int pitchClassMask = 0;
+    int bassPitchClassMask = 0;
+    int noteGroupCount = 0;
+    double arpeggioLikelihood = 0.0;
+};
+
 struct VocalVariant
 {
     int strength = 25;
@@ -53,6 +62,16 @@ public:
     [[nodiscard]] const std::vector<ChordEvent>& getChordTimeline() const noexcept
     {
         return chordTimeline;
+    }
+    [[nodiscard]] const std::vector<TabChordHint>& getTabChordHints() const noexcept
+    {
+        return tabChordHints;
+    }
+    [[nodiscard]] const TabChordHint* getTabChordHint(
+        int chordEventIndex) const noexcept;
+    [[nodiscard]] bool hasTabTracking() const noexcept
+    {
+        return !tabChordHints.empty();
     }
     [[nodiscard]] const juce::String& getSongName() const noexcept { return songName; }
     [[nodiscard]] double getScoreBpm() const noexcept { return scoreBpm; }
@@ -99,6 +118,7 @@ private:
     int manualKeyShiftMinimum = -6;
     int manualKeyShiftMaximum = 6;
     std::vector<ChordEvent> chordTimeline;
+    std::vector<TabChordHint> tabChordHints;
     std::vector<Phrase> phrases;
 };
 

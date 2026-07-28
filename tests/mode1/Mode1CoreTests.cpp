@@ -190,10 +190,17 @@ int main(int argc, char* argv[])
     passed &= require(
         expiryScheduler.processBlock(512, false, true) == -1,
         "a newly entered segment should not emit a future-offset phrase");
+    int postExpiryPhrase = expiryScheduler.processBlock(
+        512,
+        false,
+        true);
+    for (int block = 0; block < 8 && postExpiryPhrase < 0; ++block)
+        postExpiryPhrase =
+            expiryScheduler.processBlock(512, false, false);
     passed &= require(
-        expiryScheduler.processBlock(512, false, true) == 2
+        postExpiryPhrase == 2
             && expiryScheduler.getExpiredPhraseCount() == 1,
-        "crossing a chord boundary should expire stale unplayed phrases");
+        "a boundary should expire stale phrases without bursting the next");
 
     mode1::PhraseScheduler guitarDrivenScheduler;
     guitarDrivenScheduler.prepare(48'000.0);
