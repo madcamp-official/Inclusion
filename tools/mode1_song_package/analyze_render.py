@@ -45,6 +45,10 @@ def main() -> int:
         "recovered_skipped_chords": (
             int(tracking[-1]["recovered_skipped_chords"]) if tracking else None
         ),
+        "evidence_corrections": (
+            int(tracking[-1].get("evidence_corrections", 0))
+            if tracking else None
+        ),
     }
     if args.renderer_output and args.renderer_output.exists():
         for line in args.renderer_output.read_text(
@@ -52,7 +56,12 @@ def main() -> int:
         ).splitlines():
             if "=" in line:
                 key, value = line.split("=", 1)
-                if key in {"render_cpu_ms", "realtime_factor", "tempo_scale"}:
+                if key in {
+                    "render_cpu_ms",
+                    "realtime_factor",
+                    "tempo_scale",
+                    "evidence_corrections",
+                }:
                     try:
                         metrics[key] = float(value)
                     except ValueError:

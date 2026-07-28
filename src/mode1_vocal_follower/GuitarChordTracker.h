@@ -28,6 +28,7 @@ struct ChordDetection
     ChordQuality quality = ChordQuality::unknown;
     bool minor = false;
     float confidence = 0.0f;
+    int pitchClassMask = 0;
 };
 
 class GuitarChordTracker

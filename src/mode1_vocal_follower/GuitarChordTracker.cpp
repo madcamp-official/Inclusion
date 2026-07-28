@@ -94,6 +94,15 @@ ChordDetection GuitarChordTracker::analyse() noexcept
         return {};
     for (auto& value : chroma)
         value /= total;
+    const float strongestChroma =
+        *std::max_element(chroma.begin(), chroma.end());
+    int pitchClassMask = 0;
+    for (int pitchClass = 0; pitchClass < 12; ++pitchClass)
+    {
+        const float value = chroma[static_cast<size_t>(pitchClass)];
+        if (value >= std::max(0.055f, strongestChroma * 0.24f))
+            pitchClassMask |= 1 << pitchClass;
+    }
 
     float strongestBass = 0.0f;
     for (int midi = 36; midi <= 66; ++midi)
@@ -204,6 +213,7 @@ ChordDetection GuitarChordTracker::analyse() noexcept
         bestQuality == ChordQuality::minor
         || bestQuality == ChordQuality::minor7;
     detection.confidence = confidence;
+    detection.pitchClassMask = pitchClassMask;
     return detection;
 }
 

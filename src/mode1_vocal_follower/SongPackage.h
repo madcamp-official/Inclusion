@@ -23,6 +23,7 @@ struct TabChordHint
     int bassPitchClassMask = 0;
     int noteGroupCount = 0;
     double arpeggioLikelihood = 0.0;
+    double firstOnsetOffsetSeconds = 0.0;
 };
 
 struct VocalVariant

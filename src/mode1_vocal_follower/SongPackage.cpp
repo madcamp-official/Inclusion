@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace mode1
 {
@@ -179,6 +180,26 @@ bool SongPackage::loadFromFile(const juce::File& packageFile, juce::String& erro
                     || chordEventIndex >= static_cast<int>(
                         chordTimeline.size()))
                     continue;
+                double firstOnsetOffsetSeconds = 0.0;
+                if (const auto* events =
+                        hintObject->getProperty("events").getArray();
+                    events != nullptr && !events->isEmpty())
+                {
+                    firstOnsetOffsetSeconds =
+                        std::numeric_limits<double>::max();
+                    for (const auto& eventValue : *events)
+                    {
+                        const auto* eventObject =
+                            eventValue.getDynamicObject();
+                        if (eventObject != nullptr)
+                            firstOnsetOffsetSeconds = std::min(
+                                firstOnsetOffsetSeconds,
+                                numberProperty(
+                                    eventObject, "offset_sec"));
+                    }
+                    if (!std::isfinite(firstOnsetOffsetSeconds))
+                        firstOnsetOffsetSeconds = 0.0;
+                }
                 tabChordHints.push_back({
                     chordEventIndex,
                     static_cast<int>(
@@ -190,6 +211,7 @@ bool SongPackage::loadFromFile(const juce::File& packageFile, juce::String& erro
                     static_cast<int>(
                         numberProperty(hintObject, "note_group_count")),
                     numberProperty(hintObject, "arpeggio_likelihood"),
+                    std::max(0.0, firstOnsetOffsetSeconds),
                 });
             }
             std::sort(

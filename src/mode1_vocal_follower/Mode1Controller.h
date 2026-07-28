@@ -75,6 +75,10 @@ public:
     {
         return scheduler.getExpiredPhraseCount();
     }
+    [[nodiscard]] int getEvidenceCorrectionCount() const noexcept
+    {
+        return scheduler.getEvidenceCorrectionCount();
+    }
     [[nodiscard]] int getCurrentChordEventIndex() const noexcept
     {
         return scheduler.getCurrentChordEventIndex();

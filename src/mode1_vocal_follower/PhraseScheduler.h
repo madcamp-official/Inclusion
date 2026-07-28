@@ -5,6 +5,17 @@
 namespace mode1
 {
 
+struct ChordEvidence
+{
+    bool valid = false;
+    int rootPitchClass = -1;
+    int bassPitchClass = -1;
+    int quality = 8;
+    int pitchClassMask = 0;
+    float confidence = 0.0f;
+    double analysisDelaySeconds = 0.075;
+};
+
 class PhraseScheduler
 {
 public:
@@ -23,7 +34,8 @@ public:
         bool manualTrigger,
         bool automaticPlayback = false,
         bool guitarActive = false,
-        float onsetStrength = 1.0f) noexcept;
+        float onsetStrength = 1.0f,
+        const ChordEvidence* chordEvidence = nullptr) noexcept;
 
     [[nodiscard]] int getNextPhraseIndex() const noexcept { return nextPhraseIndex; }
     [[nodiscard]] int getCurrentChordEventIndex() const noexcept
@@ -41,15 +53,28 @@ public:
     {
         return expiredPhraseCount;
     }
+    [[nodiscard]] int getEvidenceCorrectionCount() const noexcept
+    {
+        return evidenceCorrectionCount;
+    }
 
 private:
     [[nodiscard]] double normalizedScoreStartTime(int phraseIndex) const noexcept;
     [[nodiscard]] int firstPlayableChordEvent() const noexcept;
     [[nodiscard]] int nextPlayableChordEvent(int afterIndex) const noexcept;
     [[nodiscard]] int chooseChordEventForOnset(
-        float onsetStrength) const noexcept;
+        float onsetStrength) noexcept;
     [[nodiscard]] double scoreBeatSeconds() const noexcept;
-    void updateTempoEstimate(int matchedEventIndex) noexcept;
+    void updateTempoEstimate(
+        int matchedEventIndex,
+        double matchedPerformanceSeconds = -1.0) noexcept;
+    [[nodiscard]] double estimatedChordBoundaryPerformanceSeconds(
+        int eventIndex,
+        double onsetPerformanceSeconds) const noexcept;
+    [[nodiscard]] double observedChordBoundaryPerformanceSeconds(
+        int eventIndex,
+        double onsetPerformanceSeconds) const noexcept;
+    void applyChordEvidence(const ChordEvidence& evidence) noexcept;
     int advanceChordCursor(
         bool force,
         float onsetStrength = 1.0f) noexcept;
@@ -79,6 +104,9 @@ private:
     double performanceOriginSeconds = 0.0;
     int recoveredSkippedChordCount = 0;
     int expiredPhraseCount = 0;
+    int evidenceCorrectionCount = 0;
+    int pendingEvidenceCandidate = -1;
+    int pendingEvidenceCount = 0;
     double guitarVocalLeadSeconds = 0.10;
 };
 

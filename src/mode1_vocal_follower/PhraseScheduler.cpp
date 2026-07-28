@@ -1,10 +1,73 @@
 #include "PhraseScheduler.h"
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
+#include <limits>
 
 namespace mode1
 {
+namespace
+{
+int notePitchClass(const juce::String& text) noexcept
+{
+    const auto name = text.trim().toUpperCase();
+    if (name.isEmpty())
+        return -1;
+    int root = -1;
+    switch (name[0])
+    {
+        case 'C': root = 0; break;
+        case 'D': root = 2; break;
+        case 'E': root = 4; break;
+        case 'F': root = 5; break;
+        case 'G': root = 7; break;
+        case 'A': root = 9; break;
+        case 'B': root = 11; break;
+        default: return -1;
+    }
+    if (name.length() >= 2)
+    {
+        if (name[1] == '#')
+            root = (root + 1) % 12;
+        else if (name[1] == 'B')
+            root = (root + 11) % 12;
+    }
+    return root;
+}
+
+int chordQuality(const juce::String& chord) noexcept
+{
+    const auto suffix = chord.fromFirstOccurrenceOf(
+        chord.substring(0, chord.indexOfAnyOf("#b") >= 0 ? 2 : 1),
+        false,
+        false).upToFirstOccurrenceOf("/", false, false).toLowerCase();
+    if (suffix.contains("maj7")) return 6;
+    if (suffix.contains("m7")) return 7;
+    if (suffix.contains("dim")) return 2;
+    if (suffix.contains("sus2")) return 3;
+    if (suffix.contains("sus")) return 4;
+    if (suffix.contains("7")) return 5;
+    if (suffix.startsWith("m")) return 1;
+    return 0;
+}
+
+int bassPitchClass(const juce::String& chord) noexcept
+{
+    const int slash = chord.indexOfChar('/');
+    return slash >= 0 ? notePitchClass(chord.substring(slash + 1)) : -1;
+}
+
+float maskSimilarity(int left, int right) noexcept
+{
+    if (left == 0 || right == 0)
+        return 0.0f;
+    const auto intersection = static_cast<unsigned int>(left & right);
+    const auto unionMask = static_cast<unsigned int>(left | right);
+    return static_cast<float>(std::popcount(intersection))
+        / std::max(1, std::popcount(unionMask));
+}
+} // namespace
 
 void PhraseScheduler::prepare(double newSampleRate)
 {
@@ -40,6 +103,9 @@ void PhraseScheduler::reset() noexcept
     performanceOriginSeconds = 0.0;
     recoveredSkippedChordCount = 0;
     expiredPhraseCount = 0;
+    evidenceCorrectionCount = 0;
+    pendingEvidenceCandidate = -1;
+    pendingEvidenceCount = 0;
 }
 
 double PhraseScheduler::normalizedScoreStartTime(int phraseIndex) const noexcept
@@ -85,7 +151,7 @@ double PhraseScheduler::scoreBeatSeconds() const noexcept
 }
 
 int PhraseScheduler::chooseChordEventForOnset(
-    float onsetStrength) const noexcept
+    float onsetStrength) noexcept
 {
     if (song == nullptr || nextChordEventIndex < 0)
         return -1;
@@ -109,29 +175,73 @@ int PhraseScheduler::chooseChordEventForOnset(
         - currentScoreTime;
     const double nextPrediction =
         nextScoreDelta / std::max(0.65, tempoScale);
-    if (song->hasTabTracking()
-        && nextPhraseIndex == 0
-        && performanceOriginEventIndex >= 0)
+    if (song->hasTabTracking() && performanceOriginEventIndex >= 0)
     {
-        const double scoreFromOrigin =
-            timeline[static_cast<size_t>(nextChordEventIndex)].startSeconds
-            - timeline[static_cast<size_t>(
-                performanceOriginEventIndex)].startSeconds;
-        const double phaseTempo = juce::jlimit(
-            0.90,
-            1.10,
-            tempoScale);
-        const double expectedFromOrigin =
-            scoreFromOrigin / phaseTempo;
         const double performedFromOrigin =
             performanceTimeSeconds - performanceOriginSeconds;
-        const double phaseEarlyTolerance = juce::jlimit(
-            0.08,
-            0.14,
-            beatRealSeconds * 0.20);
-        if (performedFromOrigin
-            < expectedFromOrigin - phaseEarlyTolerance)
+        int candidate = nextChordEventIndex;
+        int bestIndex = -1;
+        double bestError = std::numeric_limits<double>::max();
+        for (int lookAhead = 0;
+             lookAhead <= 5 && candidate >= 0;
+             ++lookAhead)
+        {
+            const double scoreFromOrigin =
+                timeline[static_cast<size_t>(candidate)].startSeconds
+                - timeline[static_cast<size_t>(
+                    performanceOriginEventIndex)].startSeconds;
+            const double expectedFromOrigin =
+                scoreFromOrigin / juce::jlimit(0.80, 1.25, tempoScale);
+            if (performedFromOrigin
+                >= expectedFromOrigin - earlyTolerance)
+            {
+                const double error =
+                    std::abs(performedFromOrigin - expectedFromOrigin)
+                    + lookAhead * beatRealSeconds * 0.08;
+                if (error < bestError)
+                {
+                    bestError = error;
+                    bestIndex = candidate;
+                }
+            }
+            else if (bestIndex >= 0)
+            {
+                break;
+            }
+            candidate = nextPlayableChordEvent(candidate);
+        }
+        if (bestIndex < 0)
             return -1;
+        if (bestIndex != nextChordEventIndex)
+        {
+            const double activityRatio = activeSecondsSinceChordMatch
+                / std::max(1.0e-6, secondsSinceChordMatch);
+            const bool safeRecovery =
+                activityRatio >= 0.55
+                && inactiveTailSeconds <= beatRealSeconds * 0.75;
+            if (!safeRecovery)
+                bestIndex = nextChordEventIndex;
+        }
+
+        // If the performer inserted a genuine pause, move the phase origin
+        // instead of jumping through several score events. Written rests are
+        // already present in scoreFromOrigin and therefore do not trigger
+        // this correction.
+        const double bestScoreFromOrigin =
+            timeline[static_cast<size_t>(bestIndex)].startSeconds
+            - timeline[static_cast<size_t>(
+                performanceOriginEventIndex)].startSeconds;
+        const double bestExpected =
+            bestScoreFromOrigin / juce::jlimit(0.80, 1.25, tempoScale);
+        const double lateness = performedFromOrigin - bestExpected;
+        if (inactiveTailSeconds > beatRealSeconds * 1.25
+            && lateness > beatRealSeconds * 1.25)
+        {
+            performanceOriginSeconds +=
+                lateness - beatRealSeconds * 0.35;
+            return nextChordEventIndex;
+        }
+        return bestIndex;
     }
     const bool strongBoundaryPrediction =
         nextScoreDelta >= scoreBeatSeconds() * 2.0
@@ -182,34 +292,110 @@ int PhraseScheduler::chooseChordEventForOnset(
     return bestIndex;
 }
 
-void PhraseScheduler::updateTempoEstimate(int matchedEventIndex) noexcept
+double PhraseScheduler::observedChordBoundaryPerformanceSeconds(
+    int eventIndex,
+    double onsetPerformanceSeconds) const noexcept
+{
+    if (song == nullptr)
+        return onsetPerformanceSeconds;
+    const auto* hint = song->getTabChordHint(eventIndex);
+    if (hint == nullptr)
+        return onsetPerformanceSeconds;
+    const double maximumObservableOffset = scoreBeatSeconds() * 0.50;
+    const double realOffset =
+        std::min(hint->firstOnsetOffsetSeconds, maximumObservableOffset)
+        / juce::jlimit(0.80, 1.25, tempoScale);
+    return std::max(0.0, onsetPerformanceSeconds - realOffset);
+}
+
+double PhraseScheduler::estimatedChordBoundaryPerformanceSeconds(
+    int eventIndex,
+    double onsetPerformanceSeconds) const noexcept
+{
+    const double observed = observedChordBoundaryPerformanceSeconds(
+        eventIndex, onsetPerformanceSeconds);
+    if (song == nullptr
+        || !song->hasTabTracking()
+        || performanceOriginEventIndex < 0
+        || eventIndex <= performanceOriginEventIndex)
+        return observed;
+
+    const auto& timeline = song->getChordTimeline();
+    const double scoreFromOrigin =
+        timeline[static_cast<size_t>(eventIndex)].startSeconds
+        - timeline[static_cast<size_t>(
+            performanceOriginEventIndex)].startSeconds;
+    const double predicted = performanceOriginSeconds
+        + scoreFromOrigin / juce::jlimit(0.80, 1.25, tempoScale);
+    const double maximumPhaseCorrection =
+        scoreBeatSeconds()
+        / juce::jlimit(0.80, 1.25, tempoScale)
+        * 0.45;
+    return predicted + juce::jlimit(
+        -maximumPhaseCorrection,
+        maximumPhaseCorrection,
+        observed - predicted);
+}
+
+void PhraseScheduler::updateTempoEstimate(
+    int matchedEventIndex,
+    double matchedPerformanceSeconds) noexcept
 {
     if (song == nullptr
         || matchedEventIndex < 0)
         return;
 
+    const double observationPerformanceSeconds =
+        matchedPerformanceSeconds >= 0.0
+        ? matchedPerformanceSeconds
+        : performanceTimeSeconds;
+    const auto& timeline = song->getChordTimeline();
+    if (song->hasTabTracking() && performanceOriginEventIndex >= 0)
+    {
+        const double scoreFromOrigin =
+            timeline[static_cast<size_t>(matchedEventIndex)].startSeconds
+            - timeline[static_cast<size_t>(
+                performanceOriginEventIndex)].startSeconds;
+        const double performanceFromOrigin =
+            observationPerformanceSeconds - performanceOriginSeconds;
+        if (scoreFromOrigin < scoreBeatSeconds() * 12.0
+            || performanceFromOrigin <= 0.10)
+            return;
+        const double observation =
+            scoreFromOrigin / performanceFromOrigin;
+        if (observation < 0.75 || observation > 1.30)
+            return;
+        // An origin-anchored estimate cannot accumulate the varying delay of
+        // individual arpeggio notes. It behaves like a causal regression
+        // slope and follows sustained tempo changes gradually.
+        tempoScale = juce::jlimit(
+            0.80,
+            1.25,
+            tempoScale + 0.06 * (observation - tempoScale));
+        ++tempoObservationCount;
+        return;
+    }
     if (tempoAnchorEventIndex < 0)
     {
         tempoAnchorEventIndex = matchedEventIndex;
-        tempoAnchorPerformanceSeconds = performanceTimeSeconds;
+        tempoAnchorPerformanceSeconds = observationPerformanceSeconds;
         return;
     }
     if (matchedEventIndex <= tempoAnchorEventIndex)
         return;
 
-    const auto& timeline = song->getChordTimeline();
     const double scoreDelta =
         timeline[static_cast<size_t>(matchedEventIndex)].startSeconds
         - timeline[static_cast<size_t>(tempoAnchorEventIndex)].startSeconds;
     const double elapsedSeconds =
-        performanceTimeSeconds - tempoAnchorPerformanceSeconds;
+        observationPerformanceSeconds - tempoAnchorPerformanceSeconds;
 
     // Chord changes inside one beat are commonly played early or late for
     // feel. Using those short intervals as a BPM observation makes repeated
     // strums look like a much faster song. Accumulate at least two beats so
     // the estimate represents musical tempo rather than articulation.
     const double minimumTempoObservationBeats =
-        song->hasTabTracking() ? 4.0 : 2.0;
+        song->hasTabTracking() ? 12.0 : 2.0;
     if (scoreDelta
             < scoreBeatSeconds() * minimumTempoObservationBeats
         || elapsedSeconds <= 0.10)
@@ -220,10 +406,7 @@ void PhraseScheduler::updateTempoEstimate(int matchedEventIndex) noexcept
         return;
 
     const double smoothing = song->hasTabTracking()
-        ? (
-            observation > tempoScale
-                ? 0.04
-                : 0.08)
+        ? 0.05
         : (tempoObservationCount < 4 ? 0.32 : 0.16);
     tempoScale = juce::jlimit(
         0.80,
@@ -231,7 +414,152 @@ void PhraseScheduler::updateTempoEstimate(int matchedEventIndex) noexcept
         tempoScale + smoothing * (observation - tempoScale));
     ++tempoObservationCount;
     tempoAnchorEventIndex = matchedEventIndex;
-    tempoAnchorPerformanceSeconds = performanceTimeSeconds;
+    tempoAnchorPerformanceSeconds = observationPerformanceSeconds;
+}
+
+void PhraseScheduler::applyChordEvidence(
+    const ChordEvidence& evidence) noexcept
+{
+    if (song == nullptr || !evidence.valid || currentChordEventIndex < 0)
+        return;
+    // Before the first lyric the repeated intro progression is deliberately
+    // ambiguous. The existing phase guard owns this section; chord evidence
+    // must not jump across the four-bar count-in.
+    if (nextPhraseIndex == 0)
+        return;
+
+    const auto& timeline = song->getChordTimeline();
+    const auto& currentChord =
+        timeline[static_cast<size_t>(currentChordEventIndex)].chord;
+    if (notePitchClass(currentChord) == evidence.rootPitchClass)
+    {
+        pendingEvidenceCandidate = -1;
+        pendingEvidenceCount = 0;
+        return;
+    }
+    const double evidenceTime = std::max(
+        0.0, performanceTimeSeconds - evidence.analysisDelaySeconds);
+    const double beatSeconds = scoreBeatSeconds()
+        / juce::jlimit(0.80, 1.25, tempoScale);
+    const auto expectedPerformanceTime = [&](int eventIndex) noexcept
+    {
+        if (performanceOriginEventIndex < 0)
+            return evidenceTime;
+        const double scoreFromOrigin =
+            timeline[static_cast<size_t>(eventIndex)].startSeconds
+            - timeline[static_cast<size_t>(
+                performanceOriginEventIndex)].startSeconds;
+        return performanceOriginSeconds
+            + scoreFromOrigin / juce::jlimit(0.80, 1.25, tempoScale);
+    };
+    const double currentPhaseError = std::abs(
+        evidenceTime - expectedPerformanceTime(currentChordEventIndex));
+    if (currentPhaseError < beatSeconds * 0.55)
+        return;
+
+    int candidate = currentChordEventIndex;
+    int bestIndex = currentChordEventIndex;
+    float currentScore = -100.0f;
+    float bestScore = -100.0f;
+    double bestPhaseError = currentPhaseError;
+    for (int distance = 0; distance <= 3 && candidate >= 0; ++distance)
+    {
+        const auto& expected =
+            timeline[static_cast<size_t>(candidate)].chord;
+        float score = distance * -0.38f;
+        const double phaseError = std::abs(
+            evidenceTime - expectedPerformanceTime(candidate));
+        score -= static_cast<float>(
+            phaseError / std::max(0.10, beatSeconds) * 0.65);
+        const int expectedRoot = notePitchClass(expected);
+        score += expectedRoot == evidence.rootPitchClass ? 2.6f : -1.4f;
+
+        const int expectedBass = bassPitchClass(expected);
+        if (expectedBass >= 0 && evidence.bassPitchClass >= 0)
+            score += expectedBass == evidence.bassPitchClass ? 0.55f : -0.25f;
+
+        const int expectedQuality = chordQuality(expected);
+        if (evidence.quality < 8)
+        {
+            if (expectedQuality == evidence.quality)
+                score += 0.8f;
+            else if (
+                (expectedQuality == 0 && evidence.quality == 6)
+                || (expectedQuality == 1 && evidence.quality == 7)
+                || (expectedQuality == 6 && evidence.quality == 0)
+                || (expectedQuality == 7 && evidence.quality == 1))
+                score += 0.25f;
+            else
+                score -= 0.35f;
+        }
+
+        float similarity = 0.0f;
+        if (const auto* hint = song->getTabChordHint(candidate))
+        {
+            similarity = maskSimilarity(
+                hint->pitchClassMask, evidence.pitchClassMask);
+            score += similarity * 3.0f;
+        }
+        if (distance == 0)
+            currentScore = score;
+        if (score > bestScore)
+        {
+            bestScore = score;
+            bestIndex = candidate;
+            bestPhaseError = phaseError;
+        }
+        candidate = nextPlayableChordEvent(candidate);
+    }
+
+    const float margin = bestScore - currentScore;
+    if (bestIndex == currentChordEventIndex
+        || bestScore < 2.2f
+        || margin < 1.25f
+        || bestPhaseError + beatSeconds * 0.20 >= currentPhaseError)
+    {
+        pendingEvidenceCandidate = -1;
+        pendingEvidenceCount = 0;
+        return;
+    }
+
+    if (pendingEvidenceCandidate == bestIndex)
+        ++pendingEvidenceCount;
+    else
+    {
+        pendingEvidenceCandidate = bestIndex;
+        pendingEvidenceCount = 1;
+    }
+    // Never jump from a single noisy FFT frame. This is the small beam's
+    // commit rule: the same absolute score candidate must win twice.
+    if (pendingEvidenceCount < 2)
+        return;
+
+    const double correctedBoundary =
+        estimatedChordBoundaryPerformanceSeconds(bestIndex, evidenceTime);
+    // Tempo observations use the actual detected onset over a long window.
+    // TAB offsets are useful for phase, but subtracting a possibly wrong
+    // intra-chord note offset biases BPM upward.
+    updateTempoEstimate(bestIndex, evidenceTime);
+    int skipped = 0;
+    for (int index = nextPlayableChordEvent(currentChordEventIndex);
+         index >= 0 && index != bestIndex;
+         index = nextPlayableChordEvent(index))
+        ++skipped;
+    recoveredSkippedChordCount += skipped;
+    currentChordEventIndex = bestIndex;
+    nextChordEventIndex = nextPlayableChordEvent(bestIndex);
+    currentChordPerformanceStartSeconds = correctedBoundary;
+    songTimeSeconds =
+        timeline[static_cast<size_t>(bestIndex)].startSeconds;
+    secondsSinceChordMatch =
+        performanceTimeSeconds - correctedBoundary;
+    activeSecondsSinceChordMatch = 0.0;
+    inactiveTailSeconds = 0.0;
+    tempoAnchorEventIndex = bestIndex;
+    tempoAnchorPerformanceSeconds = correctedBoundary;
+    pendingEvidenceCandidate = -1;
+    pendingEvidenceCount = 0;
+    ++evidenceCorrectionCount;
 }
 
 int PhraseScheduler::advanceChordCursor(
@@ -247,12 +575,15 @@ int PhraseScheduler::advanceChordCursor(
     if (matchedEventIndex < 0)
         return -1;
 
+    const double correctedBoundary =
+        estimatedChordBoundaryPerformanceSeconds(
+            matchedEventIndex, performanceTimeSeconds);
     if (!force)
-        updateTempoEstimate(matchedEventIndex);
+        updateTempoEstimate(matchedEventIndex, performanceTimeSeconds);
     else
     {
         tempoAnchorEventIndex = matchedEventIndex;
-        tempoAnchorPerformanceSeconds = performanceTimeSeconds;
+        tempoAnchorPerformanceSeconds = correctedBoundary;
     }
     const int previousEventIndex = currentChordEventIndex;
     if (previousEventIndex >= 0)
@@ -269,14 +600,15 @@ int PhraseScheduler::advanceChordCursor(
     if (performanceOriginEventIndex < 0)
     {
         performanceOriginEventIndex = matchedEventIndex;
-        performanceOriginSeconds = performanceTimeSeconds;
+        performanceOriginSeconds = correctedBoundary;
     }
-    currentChordPerformanceStartSeconds = performanceTimeSeconds;
+    currentChordPerformanceStartSeconds = correctedBoundary;
     const auto& matchedEvent =
         song->getChordTimeline()[static_cast<size_t>(matchedEventIndex)];
     songTimeSeconds = matchedEvent.startSeconds;
     nextChordEventIndex = nextPlayableChordEvent(currentChordEventIndex);
-    secondsSinceChordMatch = 0.0;
+    secondsSinceChordMatch =
+        performanceTimeSeconds - correctedBoundary;
     activeSecondsSinceChordMatch = 0.0;
     inactiveTailSeconds = 0.0;
     running = true;
@@ -374,7 +706,8 @@ int PhraseScheduler::processBlock(
     bool manualTrigger,
     bool automaticPlayback,
     bool guitarActive,
-    float onsetStrength) noexcept
+    float onsetStrength,
+    const ChordEvidence* chordEvidence) noexcept
 {
     if (song == nullptr || !song->isLoaded())
         return -1;
@@ -428,6 +761,8 @@ int PhraseScheduler::processBlock(
         advanceChordCursor(true, onsetStrength);
     else if (guitarOnset)
         advanceChordCursor(false, onsetStrength);
+    if (chordEvidence != nullptr && chordEvidence->valid && running)
+        applyChordEvidence(*chordEvidence);
 
     if (!running)
         return -1;

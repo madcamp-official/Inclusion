@@ -163,6 +163,16 @@ void Mode1Controller::processBlock(
     guitarRms.store(onsetTracker.getCurrentRms());
     lastOnset.store(onset);
 
+    ChordEvidence chordEvidence;
+    if (hasChordDetection && chordDetection.valid)
+    {
+        chordEvidence.valid = true;
+        chordEvidence.rootPitchClass = chordDetection.rootPitchClass;
+        chordEvidence.bassPitchClass = chordDetection.bassPitchClass;
+        chordEvidence.quality = static_cast<int>(chordDetection.quality);
+        chordEvidence.pitchClassMask = chordDetection.pitchClassMask;
+        chordEvidence.confidence = chordDetection.confidence;
+    }
     const int phraseToStart = transportRunning
         ? scheduler.processBlock(
             numSamples,
@@ -172,7 +182,8 @@ void Mode1Controller::processBlock(
             onsetTracker.isActive(),
             physicalOnset
                 ? onsetTracker.getLastOnsetStrength()
-                : 1.0f)
+                : 1.0f,
+            chordEvidence.valid ? &chordEvidence : nullptr)
         : -1;
     currentChordEventForUi.store(
         scheduler.getCurrentChordEventIndex());
