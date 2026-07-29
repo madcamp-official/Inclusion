@@ -268,8 +268,24 @@ void MainComponent::startRecording()
     stream.release(); // writer가 소유권을 가져간다.
     threadedWriter.reset(new juce::AudioFormatWriter::ThreadedWriter(writer, recorderThread, 65536));
 
+    // 듣기용 파일: 보정된 목소리 + 4번째 채널(반주)만. 변환 없이 바로 재생된다.
+    // 4번째 채널이 없으면 앱 출력만 남는다.
+    listenFile = recordingFile.getSiblingFile(recordingFile.getFileNameWithoutExtension()
+                                              + "_들어보기.wav");
+    listenFile.deleteFile();
+    if (auto listenStream = std::unique_ptr<juce::FileOutputStream>(listenFile.createOutputStream()))
+    {
+        juce::WavAudioFormat listenWav;
+        if (auto* lw = listenWav.createWriterFor(listenStream.get(), currentSampleRate, 2, 24, {}, 0))
+        {
+            listenStream.release();
+            listenWriter.reset(new juce::AudioFormatWriter::ThreadedWriter(lw, recorderThread, 65536));
+        }
+    }
+
     const juce::ScopedLock sl(writerLock);
     activeWriter = threadedWriter.get();
+    activeListenWriter = listenWriter.get();
 }
 
 void MainComponent::stopRecording()
@@ -277,8 +293,10 @@ void MainComponent::stopRecording()
     {
         const juce::ScopedLock sl(writerLock);
         activeWriter = nullptr;
+        activeListenWriter = nullptr;
     }
     threadedWriter.reset();
+    listenWriter.reset();
 }
 
 bool MainComponent::isRecording() const
@@ -306,6 +324,8 @@ void MainComponent::prepareToPlay(int samplesPerBlockExpected, double sampleRate
     guitarInputScratch.assign(static_cast<size_t>(samplesPerBlockExpected), 0.0f);
     vocalInputScratch.assign(static_cast<size_t>(samplesPerBlockExpected), 0.0f);
     roomInputScratch.assign(static_cast<size_t>(samplesPerBlockExpected), 0.0f);
+    listenLeftScratch.assign(static_cast<size_t>(samplesPerBlockExpected), 0.0f);
+    listenRightScratch.assign(static_cast<size_t>(samplesPerBlockExpected), 0.0f);
 }
 
 void MainComponent::getNextAudioBlock(const juce::AudioSourceChannelInfo& bufferToFill)
@@ -396,6 +416,22 @@ void MainComponent::getNextAudioBlock(const juce::AudioSourceChannelInfo& buffer
                 channels[3] = roomInputScratch.data();
             }
             activeWriter->write(channels, numSamples);
+
+            // 듣기 파일: 보정된 목소리 + 반주만 섞는다. 기타 라인과 목소리 원본은 넣지 않는다.
+            // 0.8은 둘을 더할 때 피크가 1을 넘지 않게 하는 여유다.
+            if (activeListenWriter != nullptr)
+            {
+                const float* extra = recordingChannelCount == 4 ? channels[3] : nullptr;
+                for (int i = 0; i < numSamples; ++i)
+                {
+                    const float mixed = 0.8f * outL[i] + (extra != nullptr ? 0.8f * extra[i] : 0.0f);
+                    listenLeftScratch[static_cast<size_t>(i)] = mixed;
+                    listenRightScratch[static_cast<size_t>(i)] = mixed;
+                }
+                const float* listenChannels[2] = { listenLeftScratch.data(),
+                                                   listenRightScratch.data() };
+                activeListenWriter->write(listenChannels, numSamples);
+            }
         }
     }
 }

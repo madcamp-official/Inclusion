@@ -71,14 +71,26 @@ private:
     std::vector<float> vocalInputScratch;
     std::vector<float> roomInputScratch;
 
-    // 진단 녹음. activeWriter는 오디오 스레드가 읽으므로 writerLock으로 보호한다.
+    // 녹음은 파일 두 개를 동시에 쓴다. 둘 다 activeWriter를 오디오 스레드가 읽으므로
+    // writerLock으로 함께 보호한다.
+    //
+    // 진단 파일: 기타 / 목소리 / 앱 출력 (+ 방 마이크나 유튜브). 원인을 짚으려면 처리 전
+    //   입력이 남아 있어야 한다. 하지만 채널이 많아 QuickTime에서 바로 못 듣는다.
+    // 듣기 파일: 보정된 목소리(앱 출력) + 4번째 채널. 그냥 재생하면 되는 스테레오다.
+    //   변환 단계를 거치지 않고 바로 들을 수 있어야 연주 직후 판단이 빨라진다.
     juce::TimeSliceThread recorderThread { "VocalGuitarApp wav writer" };
     std::unique_ptr<juce::AudioFormatWriter::ThreadedWriter> threadedWriter;
+    std::unique_ptr<juce::AudioFormatWriter::ThreadedWriter> listenWriter;
     juce::CriticalSection writerLock;
     juce::AudioFormatWriter::ThreadedWriter* activeWriter = nullptr;
+    juce::AudioFormatWriter::ThreadedWriter* activeListenWriter = nullptr;
     juce::File recordingFile;
+    juce::File listenFile;
     // 녹음 시작 시점에 정해진다. 방 마이크가 없으면 3, 있으면 4.
     int recordingChannelCount = 3;
+    // 듣기 파일에 쓸 스테레오 스크래치(앱 출력 + 4번째 채널).
+    std::vector<float> listenLeftScratch;
+    std::vector<float> listenRightScratch;
     double currentSampleRate = 48000.0;
     static juce::File getRecordingsDirectory();
     void startRecording();

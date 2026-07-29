@@ -18,6 +18,16 @@
 #   scarlett  출력=맥북 스피커, 목소리=Scarlett INPUT 1, 기타=Scarlett INPUT 2
 #             불필요한 맥북 마이크를 통합 기기에서 빼서 지연을 줄인다. Rubber Band R3가
 #             끊기지 않도록 버퍼는 안전한 256을 유지한다.
+#   scarlett-youtube
+#             scarlett과 같되 유튜브·영상 소리를 BlackHole로 **디지털로** 따로 받아 4채널로
+#             녹음한다. 방 마이크와 달리 목소리·기타 생음이 안 섞여 반주만 깨끗하게 남는다.
+#             시스템 기본 출력을 "Speakers + BlackHole"로 바꾸므로, 끝나면 시스템 설정 →
+#             사운드에서 원래 출력으로 되돌리거나 다른 프리셋을 실행하면 된다.
+#   scarlett-room
+#             scarlett과 같되 맥북 내장 마이크를 방 마이크로 하나 더 붙여 4채널로 녹음한다.
+#             스피커에서 실제로 나온 소리(앱 출력 + 유튜브 반주 + 기타 생음)가 한 채널에
+#             통째로 남으므로, 노래를 부르지 않고 나중에 그대로 들어보며 판단할 수 있다.
+#             내장 마이크가 들어오는 만큼 지연이 늘어나니 연주감 평가에는 scarlett을 쓴다.
 #   builtin   출력=맥북 스피커, 목소리=맥북 내장 마이크, 기타=Scarlett 악기 잭
 #             스피커로 들을 때 쓴다. 44.1kHz로 돌아 제어 갱신이 두 배 빠른 유일한 구성이다.
 #             스피커+열린 마이크라 하울링 고리가 생긴다 — 앱의 "하울링 억제"를 켜고
@@ -45,9 +55,24 @@ if [ "$1" = "--no-launch" ]; then
 fi
 
 buffer_size=256
+multiout=0
 case "${1:-airpods}" in
     airpods)  device_name="Scarlett + AirPods";                  output="AirPods";     mic="AirPods";      room="MacBook Pro 마이크" ;;
     scarlett) device_name="Scarlett + Mac Speakers";             output="MacBook Pro"; mic="Scarlett Solo"; room=""; buffer_size=256 ;;
+    scarlett-youtube)
+              # 유튜브·영상 소리를 방 마이크가 아니라 **디지털로** 따로 받는다.
+              # BlackHole(가상 오디오 기기)을 통합 기기의 입력으로 붙이고, 시스템 기본 출력을
+              # "스피커 + BlackHole" 다중 출력 기기로 바꾼다. 그러면 유튜브 소리가 스피커로
+              # 들리면서 동시에 BlackHole을 거쳐 앱 입력으로 들어온다.
+              # 방 마이크와 달리 목소리·기타 생음이 안 섞여서 반주만 깨끗하게 남는다.
+              # 맥북 스피커가 통합 기기와 다중 출력 기기 양쪽에 들어가지만 동시 사용된다(실측).
+              device_name="Scarlett + Speakers + YouTube";       output="MacBook Pro 스피커"; mic="Scarlett Solo"; room="BlackHole"; multiout=1 ;;
+    scarlett-room)
+              # scarlett과 같되 맥북 내장 마이크를 방 마이크로 하나 더 붙인다. 처리에는 안 쓰고
+              # 녹음에만 담긴다 — 앱 출력·유튜브 반주·기타 생음이 섞인 "실제로 들린 소리"를
+              # 남겨야 나중에 노래하지 않고 그대로 다시 들어볼 수 있다.
+              # 내장 마이크가 통합 기기에 들어오는 만큼 지연이 늘어나므로 연주감 평가에는 scarlett을 쓴다.
+              device_name="Scarlett + Mac Speakers + Room";      output="MacBook Pro"; mic="Scarlett Solo"; room="MacBook Pro 마이크" ;;
     speakers)
         # 이 조합은 만들 수 없다. 앱 녹음으로 확인(2026-07-28): 출력이 맥북 스피커면
         # 목소리 채널이 정확히 0이고, 같은 기기에서 출력만 에어팟으로 바꾸면 -54dB로 살아난다.
@@ -63,7 +88,7 @@ case "${1:-airpods}" in
     builtin)  device_name="Guitar + Built-in Mic";               output="MacBook Pro"; mic="MacBook Pro";  room="" ;;
     *)
         echo "알 수 없는 프리셋: $1"
-        echo "쓸 수 있는 값: airpods, scarlett, speakers, builtin"
+        echo "쓸 수 있는 값: airpods, scarlett, scarlett-room, scarlett-youtube, speakers, builtin"
         exit 1 ;;
 esac
 guitar="Scarlett Solo"
@@ -82,7 +107,18 @@ cmake --build build --target Mode2AudioDevice >/dev/null
 # 방 마이크(스피커 앞에서 실제 들리는 소리를 받는 마이크)를 입력으로 하나 더 붙인다.
 # 처리에는 쓰지 않고 녹음에만 담긴다 — 앱 출력과 유튜브 반주가 섞인 "실제로 들린 소리"가
 # 한 파일에 남아야 나중에 그대로 다시 들어볼 수 있다.
-if [ "$mic" = "$guitar" ]; then
+# 시스템(유튜브 등)의 소리를 갈라 받으려면 기본 출력을 "스피커 + BlackHole"로 바꿔야 한다.
+# 이걸 안 하면 BlackHole 채널이 오류 없이 완전 무음이 된다 — 앱을 의심하게 되는 함정이다.
+if [ "$multiout" -eq 1 ]; then
+    build/Mode2AudioDevice create-multiout "Speakers + BlackHole" "$output" "BlackHole" >/dev/null
+    build/Mode2AudioDevice default-output "Speakers + BlackHole"
+    echo
+fi
+
+if [ "$mic" = "$guitar" ] && [ -n "$room" ]; then
+    # Scarlett 하나에서 INPUT 1(마이크)과 INPUT 2(기타)를 받고, 방 마이크를 하나 더 붙인다.
+    layout=$(build/Mode2AudioDevice create "$device_name" "$output" "$guitar" "$room")
+elif [ "$mic" = "$guitar" ]; then
     # Scarlett 하나에서 INPUT 1(마이크)과 INPUT 2(기타)를 함께 받는다.
     # 같은 서브기기를 두 번 넣으면 안 되므로 한 번만 추가한다.
     layout=$(build/Mode2AudioDevice create "$device_name" "$output" "$guitar")

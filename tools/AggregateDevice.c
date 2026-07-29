@@ -302,7 +302,49 @@ static CFDictionaryRef subDeviceDict(const char *uid, int driftCompensation)
     return d;
 }
 
-static int createAggregate(const char *name, int deviceCount, char **deviceNames)
+// 시스템 기본 출력 기기를 바꾼다. 유튜브 같은 다른 앱의 소리는 이 기기로 나가므로,
+// 다중 출력 기기(스피커 + BlackHole)를 여기에 걸어야 소리를 들으면서 동시에 녹음할 수 있다.
+static int setDefaultOutput(const char *nameFragment)
+{
+    // findDevice는 "통합할 대상"을 찾는 함수라 통합 기기를 제외한다. 기본 출력은
+    // 오히려 다중 출력 기기로 거는 게 목적이므로 여기서는 제외 없이 이름으로 찾는다.
+    UInt32 count = 0;
+    AudioObjectID *devices = allDevices(&count);
+    AudioObjectID dev = kAudioObjectUnknown;
+    for (UInt32 i = 0; i < count; ++i)
+    {
+        char name[512];
+        if (!deviceName(devices[i], name, sizeof(name))) continue;
+        if (!containsNoCase(name, nameFragment)) continue;
+        if (channelCount(devices[i], kAudioObjectPropertyScopeOutput) == 0) continue;
+        dev = devices[i];
+        break;
+    }
+    free(devices);
+    if (dev == kAudioObjectUnknown)
+    {
+        printf("출력 기기를 찾지 못했습니다: %s\n", nameFragment);
+        return 1;
+    }
+    AudioObjectPropertyAddress addr = { kAudioHardwarePropertyDefaultOutputDevice,
+                                        kAudioObjectPropertyScopeGlobal,
+                                        kAudioObjectPropertyElementMain };
+    OSStatus err = AudioObjectSetPropertyData(kAudioObjectSystemObject, &addr, 0, NULL,
+                                              sizeof(dev), &dev);
+    if (err != noErr)
+    {
+        printf("기본 출력 변경 실패: OSStatus %d\n", (int) err);
+        return 1;
+    }
+    char n[256];
+    deviceName(dev, n, sizeof(n));
+    printf("시스템 기본 출력을 바꿨습니다: %s\n", n);
+    return 0;
+}
+
+// stacked=1이면 "다중 출력 기기"가 된다. 같은 소리를 여러 기기로 동시에 내보내므로,
+// 스피커 + BlackHole로 묶으면 들으면서 동시에 디지털로 받을 수 있다.
+static int createAggregateEx(const char *name, int deviceCount, char **deviceNames, int stacked)
 {
     char uid[512];
     uidForName(name, uid, sizeof(uid));
@@ -369,10 +411,18 @@ static int createAggregate(const char *name, int deviceCount, char **deviceNames
     CFDictionarySetValue(desc, CFSTR(kAudioAggregateDeviceMasterSubDeviceKey), cfMaster);
     CFDictionarySetValue(desc, CFSTR(kAudioAggregateDeviceIsPrivateKey), cfPrivate);
 
+    CFNumberRef cfStacked = NULL;
+    if (stacked)
+    {
+        cfStacked = CFNumberCreate(kCFAllocatorDefault, kCFNumberIntType, &stacked);
+        CFDictionarySetValue(desc, CFSTR(kAudioAggregateDeviceIsStackedKey), cfStacked);
+    }
+
     AudioObjectID created = kAudioObjectUnknown;
     OSStatus err = AudioHardwareCreateAggregateDevice(desc, &created);
 
     CFRelease(cfName); CFRelease(cfUID); CFRelease(cfMaster); CFRelease(cfPrivate);
+    if (cfStacked) CFRelease(cfStacked);
     CFRelease(list);
     for (int i = 0; i < deviceCount; ++i) CFRelease(subs[i]);
     CFRelease(desc);
@@ -383,8 +433,16 @@ static int createAggregate(const char *name, int deviceCount, char **deviceNames
         return 1;
     }
 
-    printf("통합 기기를 만들었습니다: %s  (%.0fHz)\n", name, sampleRate(created));
+    printf("%s를 만들었습니다: %s  (%.0fHz)\n",
+           stacked ? "다중 출력 기기" : "통합 기기", name, sampleRate(created));
     printf("UID: %s\n", uid);
+    if (stacked)
+    {
+        // 다중 출력 기기는 같은 소리를 모든 하위 기기에 복제한다. 아래 채널 배치는
+        // 통합 기기 기준이라 의미가 없으므로 여기서 끝낸다.
+        printf("같은 소리가 위 기기들로 동시에 나갑니다.\n");
+        return 0;
+    }
     printf("레이트를 정하는 기기(마스터): %s%s\n\n", names[masterIndex],
            masterIndex == 0 ? "" : "  ← 블루투스라 레이트를 못 맞추면 무음이 되므로 이쪽에 맞춘다");
 
@@ -467,13 +525,19 @@ int main(int argc, char **argv)
         return 0;
     }
     if (argc >= 5 && strcmp(argv[1], "create") == 0)
-        return createAggregate(argv[2], argc - 3, argv + 3);
+        return createAggregateEx(argv[2], argc - 3, argv + 3, 0);
+    if (argc >= 5 && strcmp(argv[1], "create-multiout") == 0)
+        return createAggregateEx(argv[2], argc - 3, argv + 3, 1);
     if (argc == 3 && strcmp(argv[1], "remove") == 0)
         return removeAggregate(argv[2]);
+    if (argc == 3 && strcmp(argv[1], "default-output") == 0)
+        return setDefaultOutput(argv[2]);
 
     printf("사용법:\n"
            "  Mode2AudioDevice list\n"
            "  Mode2AudioDevice create <이름> <출력기기> <입력기기...>\n"
+           "  Mode2AudioDevice create-multiout <이름> <기기...>   같은 소리를 여러 기기로\n"
+           "  Mode2AudioDevice default-output <기기>              시스템 기본 출력 변경\n"
            "  Mode2AudioDevice remove <이름>\n"
            "\n"
            "기기는 이름 일부만 적어도 찾는다(대소문자 무시).\n"
