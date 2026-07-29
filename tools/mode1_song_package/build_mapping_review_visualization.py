@@ -171,7 +171,6 @@ def main() -> int:
             "missed": (
                 chord.get("chord", "N") not in ("N", "N.C.")
                 and index not in tracked_indices
-                and index <= max(tracked_indices, default=-1)
             ),
         })
 

@@ -49,6 +49,14 @@ def main() -> int:
             int(tracking[-1].get("evidence_corrections", 0))
             if tracking else None
         ),
+        "accepted_timing_anchors": (
+            int(tracking[-1].get("accepted_timing_anchors", 0))
+            if tracking else None
+        ),
+        "rejected_timing_anchors": (
+            int(tracking[-1].get("rejected_timing_anchors", 0))
+            if tracking else None
+        ),
     }
     if args.renderer_output and args.renderer_output.exists():
         for line in args.renderer_output.read_text(
@@ -61,6 +69,8 @@ def main() -> int:
                     "realtime_factor",
                     "tempo_scale",
                     "evidence_corrections",
+                    "accepted_timing_anchors",
+                    "rejected_timing_anchors",
                 }:
                     try:
                         metrics[key] = float(value)

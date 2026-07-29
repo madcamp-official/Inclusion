@@ -156,9 +156,12 @@ int main(int argc, char* argv[])
     juce::StringArray trackingRows;
     trackingRows.add(
         "time_sec,chord_event_index,tempo_scale,recovered_skipped_chords,"
-        "expired_phrases,evidence_corrections");
+        "expired_phrases,evidence_corrections,accepted_timing_anchors,"
+        "rejected_timing_anchors");
     juce::StringArray detectionRows;
     detectionRows.add("time_sec,raw_detected_chord");
+    juce::StringArray onsetRows;
+    onsetRows.add("time_sec,raw_detected_chord");
     int previousPhrase = -1;
     int previousChordEvent = -1;
     juce::String previousRawChord;
@@ -224,10 +227,20 @@ int main(int argc, char* argv[])
                 + "," + juce::String(
                     controller.getExpiredPhraseCount())
                 + "," + juce::String(
-                    controller.getEvidenceCorrectionCount()));
+                    controller.getEvidenceCorrectionCount())
+                + "," + juce::String(
+                    controller.getAcceptedTimingAnchorCount())
+                + "," + juce::String(
+                    controller.getRejectedTimingAnchorCount()));
             previousChordEvent = chordEvent;
         }
         const auto rawChord = controller.getRawDetectedChordName();
+        if (controller.consumedOnset())
+        {
+            onsetRows.add(
+                juce::String(start / sampleRate, 6)
+                + ",\"" + rawChord.replace("\"", "\"\"") + "\"");
+        }
         if (rawChord.isNotEmpty()
             && rawChord != "-"
             && rawChord != previousRawChord)
@@ -289,6 +302,14 @@ int main(int argc, char* argv[])
         std::cerr << "could not write raw chord detection log\n";
         return 1;
     }
+    const auto onsetFile =
+        outputDirectory.getChildFile("raw_guitar_onsets.csv");
+    if (!onsetFile.replaceWithText(
+            onsetRows.joinIntoString("\n") + "\n"))
+    {
+        std::cerr << "could not write raw onset log\n";
+        return 1;
+    }
 
     std::cout << "sample_rate=" << sampleRate << '\n'
               << "block_size=" << blockSize << '\n'
@@ -308,6 +329,10 @@ int main(int argc, char* argv[])
               << controller.getExpiredPhraseCount() << '\n'
               << "evidence_corrections="
               << controller.getEvidenceCorrectionCount() << '\n'
+              << "accepted_timing_anchors="
+              << controller.getAcceptedTimingAnchorCount() << '\n'
+              << "rejected_timing_anchors="
+              << controller.getRejectedTimingAnchorCount() << '\n'
               << "vocal_peak=" << peakMagnitude(vocals) << '\n'
               << "combined_peak=" << peakMagnitude(combined) << '\n'
               << "vocal_output=" << vocalFile.getFullPathName() << '\n'

@@ -79,6 +79,14 @@ public:
     {
         return scheduler.getEvidenceCorrectionCount();
     }
+    [[nodiscard]] int getAcceptedTimingAnchorCount() const noexcept
+    {
+        return scheduler.getAcceptedTimingAnchorCount();
+    }
+    [[nodiscard]] int getRejectedTimingAnchorCount() const noexcept
+    {
+        return scheduler.getRejectedTimingAnchorCount();
+    }
     [[nodiscard]] int getCurrentChordEventIndex() const noexcept
     {
         return scheduler.getCurrentChordEventIndex();

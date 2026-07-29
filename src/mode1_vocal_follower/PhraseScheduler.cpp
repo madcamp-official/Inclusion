@@ -106,6 +106,9 @@ void PhraseScheduler::reset() noexcept
     evidenceCorrectionCount = 0;
     pendingEvidenceCandidate = -1;
     pendingEvidenceCount = 0;
+    clearTimingAnchors();
+    acceptedTimingAnchorCount = 0;
+    rejectedTimingAnchorCount = 0;
 }
 
 double PhraseScheduler::normalizedScoreStartTime(int phraseIndex) const noexcept
@@ -148,6 +151,201 @@ double PhraseScheduler::scoreBeatSeconds() const noexcept
     if (song == nullptr || song->getScoreBpm() <= 1.0)
         return 0.5;
     return 60.0 / song->getScoreBpm();
+}
+
+void PhraseScheduler::clearTimingAnchors() noexcept
+{
+    timingAnchorCount = 0;
+    timingAnchors.fill({});
+}
+
+bool PhraseScheduler::hasReliableTimingSlope() const noexcept
+{
+    const int minimumAnchors =
+        song != nullptr && song->hasTabTracking() ? 4 : 2;
+    if (timingAnchorCount < minimumAnchors)
+        return false;
+    const double scoreSpan =
+        timingAnchors[static_cast<size_t>(timingAnchorCount - 1)].scoreSeconds
+        - timingAnchors.front().scoreSeconds;
+    const double minimumBeats =
+        song != nullptr && song->hasTabTracking() ? 8.0 : 2.0;
+    return scoreSpan >= scoreBeatSeconds() * minimumBeats;
+}
+
+double PhraseScheduler::performanceSecondsPerScoreSecond() const noexcept
+{
+    if (!hasReliableTimingSlope())
+        return 1.0 / juce::jlimit(0.80, 1.25, tempoScale);
+
+    // The median of all sufficiently separated anchor-pair slopes is robust
+    // to a single chord whose detected start/end boundary was split badly.
+    // Eight anchors produce at most 28 values, so this stays allocation-free
+    // in the audio callback.
+    std::array<double, 28> slopes {};
+    int slopeCount = 0;
+    const double minimumSpan = scoreBeatSeconds()
+        * (song != nullptr && song->hasTabTracking() ? 8.0 : 2.0);
+    for (int left = 0; left < timingAnchorCount; ++left)
+    {
+        for (int right = left + 1; right < timingAnchorCount; ++right)
+        {
+            const double scoreDelta =
+                timingAnchors[static_cast<size_t>(right)].scoreSeconds
+                - timingAnchors[static_cast<size_t>(left)].scoreSeconds;
+            const double performanceDelta =
+                timingAnchors[static_cast<size_t>(right)].performanceSeconds
+                - timingAnchors[static_cast<size_t>(left)].performanceSeconds;
+            if (scoreDelta >= minimumSpan && performanceDelta > 0.0)
+                slopes[static_cast<size_t>(slopeCount++)] =
+                    performanceDelta / scoreDelta;
+        }
+    }
+    if (slopeCount == 0)
+        return 1.0 / juce::jlimit(0.80, 1.25, tempoScale);
+    std::sort(slopes.begin(), slopes.begin() + slopeCount);
+    const double median = slopeCount % 2 == 0
+        ? 0.5 * (
+            slopes[static_cast<size_t>(slopeCount / 2 - 1)]
+            + slopes[static_cast<size_t>(slopeCount / 2)])
+        : slopes[static_cast<size_t>(slopeCount / 2)];
+    return juce::jlimit(0.80, 1.25, median);
+}
+
+double PhraseScheduler::mapScoreTimeToPerformanceSeconds(
+    double scoreSeconds) const noexcept
+{
+    if (timingAnchorCount == 0)
+        return performanceTimeSeconds;
+
+    const double slope = performanceSecondsPerScoreSecond();
+    if (!hasReliableTimingSlope())
+    {
+        const auto& first = timingAnchors.front();
+        return first.performanceSeconds
+            + slope * (scoreSeconds - first.scoreSeconds);
+    }
+    const auto affinePrediction = [this, slope](
+        double targetScoreSeconds) noexcept
+    {
+        std::array<double, maximumTimingAnchors> offsets {};
+        for (int index = 0; index < timingAnchorCount; ++index)
+        {
+            const auto& anchor =
+                timingAnchors[static_cast<size_t>(index)];
+            offsets[static_cast<size_t>(index)] =
+                anchor.performanceSeconds - slope * anchor.scoreSeconds;
+        }
+        std::sort(
+            offsets.begin(),
+            offsets.begin() + timingAnchorCount);
+        const double intercept = timingAnchorCount % 2 == 0
+            ? 0.5 * (
+                offsets[static_cast<size_t>(timingAnchorCount / 2 - 1)]
+                + offsets[static_cast<size_t>(timingAnchorCount / 2)])
+            : offsets[static_cast<size_t>(timingAnchorCount / 2)];
+        return intercept + slope * targetScoreSeconds;
+    };
+
+    const auto& first = timingAnchors.front();
+    if (timingAnchorCount == 1 || scoreSeconds <= first.scoreSeconds)
+        return affinePrediction(scoreSeconds);
+
+    // Once both causal anchors are known, map directly between their
+    // absolute times. No per-chord error can accumulate beyond this span.
+    for (int index = 1; index < timingAnchorCount; ++index)
+    {
+        const auto& right = timingAnchors[static_cast<size_t>(index)];
+        if (scoreSeconds > right.scoreSeconds)
+            continue;
+        const auto& left =
+            timingAnchors[static_cast<size_t>(index - 1)];
+        const double scoreSpan = right.scoreSeconds - left.scoreSeconds;
+        if (scoreSpan <= 1.0e-6)
+            return right.performanceSeconds;
+        const double phase = juce::jlimit(
+            0.0,
+            1.0,
+            (scoreSeconds - left.scoreSeconds) / scoreSpan);
+        return left.performanceSeconds
+            + phase * (
+                right.performanceSeconds - left.performanceSeconds);
+    }
+
+    // Live playback cannot see the future right anchor. Extrapolate from the
+    // recent accepted boundaries with a robust slope and median phase.
+    return affinePrediction(scoreSeconds);
+}
+
+bool PhraseScheduler::recordTimingAnchor(
+    int eventIndex,
+    double boundaryPerformanceSeconds,
+    bool allowPauseRebase) noexcept
+{
+    if (song == nullptr || eventIndex < 0)
+        return false;
+    const auto& timeline = song->getChordTimeline();
+    if (eventIndex >= static_cast<int>(timeline.size()))
+        return false;
+
+    const double scoreSeconds =
+        timeline[static_cast<size_t>(eventIndex)].startSeconds;
+    if (allowPauseRebase && timingAnchorCount > 0)
+    {
+        // A real pause is part of the performance. Start a new local affine
+        // segment rather than interpreting the pause as a bad chord or
+        // letting it permanently skew the song-wide tempo.
+        clearTimingAnchors();
+    }
+
+    if (timingAnchorCount > 0)
+    {
+        const auto& last =
+            timingAnchors[static_cast<size_t>(timingAnchorCount - 1)];
+        if (eventIndex <= last.eventIndex
+            || scoreSeconds <= last.scoreSeconds
+            || boundaryPerformanceSeconds <= last.performanceSeconds)
+        {
+            ++rejectedTimingAnchorCount;
+            return false;
+        }
+
+        const double scoreDelta = scoreSeconds - last.scoreSeconds;
+        const double performanceDelta =
+            boundaryPerformanceSeconds - last.performanceSeconds;
+        const double intervalSlope = performanceDelta / scoreDelta;
+        const double expectedSlope =
+            performanceSecondsPerScoreSecond();
+        const double relativeDurationRatio =
+            intervalSlope / std::max(1.0e-6, expectedSlope);
+        const double residual = boundaryPerformanceSeconds
+            - mapScoreTimeToPerformanceSeconds(scoreSeconds);
+
+        // These are confidence gates, not a fixed BPM. A genuinely slower
+        // player produces a consistent sequence of accepted slopes, while a
+        // single boundary that steals most of its neighbour is discarded.
+        if (relativeDurationRatio < 0.65
+            || relativeDurationRatio > 1.50
+            || std::abs(residual) > 0.40)
+        {
+            ++rejectedTimingAnchorCount;
+            return false;
+        }
+    }
+
+    if (timingAnchorCount == maximumTimingAnchors)
+    {
+        std::move(
+            timingAnchors.begin() + 1,
+            timingAnchors.end(),
+            timingAnchors.begin());
+        --timingAnchorCount;
+    }
+    timingAnchors[static_cast<size_t>(timingAnchorCount++)] = {
+        eventIndex, scoreSeconds, boundaryPerformanceSeconds
+    };
+    ++acceptedTimingAnchorCount;
+    return true;
 }
 
 int PhraseScheduler::chooseChordEventForOnset(
@@ -232,7 +430,8 @@ int PhraseScheduler::chooseChordEventForOnset(
             - timeline[static_cast<size_t>(
                 performanceOriginEventIndex)].startSeconds;
         const double bestExpected =
-            bestScoreFromOrigin / juce::jlimit(0.80, 1.25, tempoScale);
+            bestScoreFromOrigin
+                / juce::jlimit(0.80, 1.25, tempoScale);
         const double lateness = performedFromOrigin - bestExpected;
         if (inactiveTailSeconds > beatRealSeconds * 1.25
             && lateness > beatRealSeconds * 1.25)
@@ -292,49 +491,15 @@ int PhraseScheduler::chooseChordEventForOnset(
     return bestIndex;
 }
 
-double PhraseScheduler::observedChordBoundaryPerformanceSeconds(
-    int eventIndex,
-    double onsetPerformanceSeconds) const noexcept
-{
-    if (song == nullptr)
-        return onsetPerformanceSeconds;
-    const auto* hint = song->getTabChordHint(eventIndex);
-    if (hint == nullptr)
-        return onsetPerformanceSeconds;
-    const double maximumObservableOffset = scoreBeatSeconds() * 0.50;
-    const double realOffset =
-        std::min(hint->firstOnsetOffsetSeconds, maximumObservableOffset)
-        / juce::jlimit(0.80, 1.25, tempoScale);
-    return std::max(0.0, onsetPerformanceSeconds - realOffset);
-}
-
 double PhraseScheduler::estimatedChordBoundaryPerformanceSeconds(
     int eventIndex,
     double onsetPerformanceSeconds) const noexcept
 {
-    const double observed = observedChordBoundaryPerformanceSeconds(
-        eventIndex, onsetPerformanceSeconds);
-    if (song == nullptr
-        || !song->hasTabTracking()
-        || performanceOriginEventIndex < 0
-        || eventIndex <= performanceOriginEventIndex)
-        return observed;
-
-    const auto& timeline = song->getChordTimeline();
-    const double scoreFromOrigin =
-        timeline[static_cast<size_t>(eventIndex)].startSeconds
-        - timeline[static_cast<size_t>(
-            performanceOriginEventIndex)].startSeconds;
-    const double predicted = performanceOriginSeconds
-        + scoreFromOrigin / juce::jlimit(0.80, 1.25, tempoScale);
-    const double maximumPhaseCorrection =
-        scoreBeatSeconds()
-        / juce::jlimit(0.80, 1.25, tempoScale)
-        * 0.45;
-    return predicted + juce::jlimit(
-        -maximumPhaseCorrection,
-        maximumPhaseCorrection,
-        observed - predicted);
+    juce::ignoreUnused(eventIndex);
+    // The detector onset is the causal evidence that the player actually
+    // supplied. Subtracting a TAB note offset here made a correct ~1.0x
+    // performance look about 1.07x fast and was itself a tempo bias.
+    return onsetPerformanceSeconds;
 }
 
 void PhraseScheduler::updateTempoEstimate(
@@ -345,10 +510,25 @@ void PhraseScheduler::updateTempoEstimate(
         || matchedEventIndex < 0)
         return;
 
-    const double observationPerformanceSeconds =
+    const double boundaryPerformanceSeconds =
         matchedPerformanceSeconds >= 0.0
         ? matchedPerformanceSeconds
         : performanceTimeSeconds;
+    const double beatPerformanceSeconds =
+        scoreBeatSeconds() * performanceSecondsPerScoreSecond();
+    const bool realPause =
+        inactiveTailSeconds > beatPerformanceSeconds * 0.75
+        && timingAnchorCount > 0
+        && boundaryPerformanceSeconds
+            - mapScoreTimeToPerformanceSeconds(
+                song->getChordTimeline()[
+                    static_cast<size_t>(matchedEventIndex)].startSeconds)
+            > beatPerformanceSeconds * 0.55;
+    recordTimingAnchor(
+        matchedEventIndex,
+        boundaryPerformanceSeconds,
+        realPause);
+
     const auto& timeline = song->getChordTimeline();
     if (song->hasTabTracking() && performanceOriginEventIndex >= 0)
     {
@@ -357,7 +537,7 @@ void PhraseScheduler::updateTempoEstimate(
             - timeline[static_cast<size_t>(
                 performanceOriginEventIndex)].startSeconds;
         const double performanceFromOrigin =
-            observationPerformanceSeconds - performanceOriginSeconds;
+            boundaryPerformanceSeconds - performanceOriginSeconds;
         if (scoreFromOrigin < scoreBeatSeconds() * 12.0
             || performanceFromOrigin <= 0.10)
             return;
@@ -365,9 +545,6 @@ void PhraseScheduler::updateTempoEstimate(
             scoreFromOrigin / performanceFromOrigin;
         if (observation < 0.75 || observation > 1.30)
             return;
-        // An origin-anchored estimate cannot accumulate the varying delay of
-        // individual arpeggio notes. It behaves like a causal regression
-        // slope and follows sustained tempo changes gradually.
         tempoScale = juce::jlimit(
             0.80,
             1.25,
@@ -378,7 +555,7 @@ void PhraseScheduler::updateTempoEstimate(
     if (tempoAnchorEventIndex < 0)
     {
         tempoAnchorEventIndex = matchedEventIndex;
-        tempoAnchorPerformanceSeconds = observationPerformanceSeconds;
+        tempoAnchorPerformanceSeconds = boundaryPerformanceSeconds;
         return;
     }
     if (matchedEventIndex <= tempoAnchorEventIndex)
@@ -388,23 +565,16 @@ void PhraseScheduler::updateTempoEstimate(
         timeline[static_cast<size_t>(matchedEventIndex)].startSeconds
         - timeline[static_cast<size_t>(tempoAnchorEventIndex)].startSeconds;
     const double elapsedSeconds =
-        observationPerformanceSeconds - tempoAnchorPerformanceSeconds;
-
-    // Chord changes inside one beat are commonly played early or late for
-    // feel. Using those short intervals as a BPM observation makes repeated
-    // strums look like a much faster song. Accumulate at least two beats so
-    // the estimate represents musical tempo rather than articulation.
+        boundaryPerformanceSeconds - tempoAnchorPerformanceSeconds;
     const double minimumTempoObservationBeats =
         song->hasTabTracking() ? 12.0 : 2.0;
     if (scoreDelta
             < scoreBeatSeconds() * minimumTempoObservationBeats
         || elapsedSeconds <= 0.10)
         return;
-
     const double observation = scoreDelta / elapsedSeconds;
     if (observation < 0.75 || observation > 1.30)
         return;
-
     const double smoothing = song->hasTabTracking()
         ? 0.05
         : (tempoObservationCount < 4 ? 0.32 : 0.16);
@@ -414,7 +584,7 @@ void PhraseScheduler::updateTempoEstimate(
         tempoScale + smoothing * (observation - tempoScale));
     ++tempoObservationCount;
     tempoAnchorEventIndex = matchedEventIndex;
-    tempoAnchorPerformanceSeconds = observationPerformanceSeconds;
+    tempoAnchorPerformanceSeconds = boundaryPerformanceSeconds;
 }
 
 void PhraseScheduler::applyChordEvidence(
@@ -536,10 +706,7 @@ void PhraseScheduler::applyChordEvidence(
 
     const double correctedBoundary =
         estimatedChordBoundaryPerformanceSeconds(bestIndex, evidenceTime);
-    // Tempo observations use the actual detected onset over a long window.
-    // TAB offsets are useful for phase, but subtracting a possibly wrong
-    // intra-chord note offset biases BPM upward.
-    updateTempoEstimate(bestIndex, evidenceTime);
+    updateTempoEstimate(bestIndex, correctedBoundary);
     int skipped = 0;
     for (int index = nextPlayableChordEvent(currentChordEventIndex);
          index >= 0 && index != bestIndex;
@@ -578,12 +745,17 @@ int PhraseScheduler::advanceChordCursor(
     const double correctedBoundary =
         estimatedChordBoundaryPerformanceSeconds(
             matchedEventIndex, performanceTimeSeconds);
-    if (!force)
-        updateTempoEstimate(matchedEventIndex, performanceTimeSeconds);
+    if (force)
+    {
+        // A pedal/Space trigger is an explicit absolute position anchor. It
+        // may be pressed without real-time waiting in tests or rehearsal, so
+        // rebase directly instead of interpreting its interval as tempo.
+        recordTimingAnchor(
+            matchedEventIndex, correctedBoundary, true);
+    }
     else
     {
-        tempoAnchorEventIndex = matchedEventIndex;
-        tempoAnchorPerformanceSeconds = correctedBoundary;
+        updateTempoEstimate(matchedEventIndex, correctedBoundary);
     }
     const int previousEventIndex = currentChordEventIndex;
     if (previousEventIndex >= 0)
@@ -643,13 +815,13 @@ int PhraseScheduler::startDueGuitarPhrase() noexcept
     if (nextPhrase.anchorChordEventIndex > currentChordEventIndex)
         return -1;
 
-    const double segmentElapsedSeconds =
-        performanceTimeSeconds - currentChordPerformanceStartSeconds;
-    const double segmentTargetSeconds =
-        nextPhrase.chordRelativeStartSeconds
-            / juce::jlimit(0.80, 1.25, tempoScale)
+    // Map every immutable source target from absolute causal anchors. A
+    // song-wide tempo estimate still guides score-position selection, but it
+    // no longer decides the local in-chord vocal target by itself.
+    const double targetPerformanceSeconds =
+        mapScoreTimeToPerformanceSeconds(nextPhrase.sourceStartSeconds)
         - guitarVocalLeadSeconds;
-    if (segmentElapsedSeconds < segmentTargetSeconds)
+    if (performanceTimeSeconds < targetPerformanceSeconds)
         return -1;
 
     // If timing jumped forward at a chord boundary, never burst through a
