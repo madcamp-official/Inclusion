@@ -272,9 +272,26 @@ double PhraseScheduler::mapScoreTimeToPerformanceSeconds(
                 right.performanceSeconds - left.performanceSeconds);
     }
 
-    // Live playback cannot see the future right anchor. Extrapolate from the
-    // recent accepted boundaries with a robust slope and median phase.
-    return affinePrediction(scoreSeconds);
+    // Live playback cannot see the future right anchor. Close to the newest
+    // accepted chord, force continuity through that real boundary; otherwise
+    // median phase jitter can make the same lyric early for one performance
+    // and late for another. Blend back to the robust multi-anchor phase only
+    // for targets several beats ahead.
+    const auto& last =
+        timingAnchors[static_cast<size_t>(timingAnchorCount - 1)];
+    const double localPrediction =
+        last.performanceSeconds
+        + slope * (scoreSeconds - last.scoreSeconds);
+    const double beatsAhead =
+        (scoreSeconds - last.scoreSeconds)
+        / std::max(1.0e-6, scoreBeatSeconds());
+    const double affineBlend = juce::jlimit(
+        0.0,
+        1.0,
+        (beatsAhead - 1.0) / 3.0);
+    return localPrediction
+        + affineBlend * (
+            affinePrediction(scoreSeconds) - localPrediction);
 }
 
 bool PhraseScheduler::recordTimingAnchor(
@@ -731,7 +748,8 @@ void PhraseScheduler::applyChordEvidence(
 
 int PhraseScheduler::advanceChordCursor(
     bool force,
-    float onsetStrength) noexcept
+    float onsetStrength,
+    int* boundaryPhrase) noexcept
 {
     if (song == nullptr || nextChordEventIndex < 0)
         return -1;
@@ -741,6 +759,9 @@ int PhraseScheduler::advanceChordCursor(
         : chooseChordEventForOnset(onsetStrength);
     if (matchedEventIndex < 0)
         return -1;
+
+    if (boundaryPhrase != nullptr)
+        *boundaryPhrase = startBoundaryGracePhrase();
 
     const double correctedBoundary =
         estimatedChordBoundaryPerformanceSeconds(
@@ -857,6 +878,47 @@ int PhraseScheduler::startDueGuitarPhrase() noexcept
     return phraseToStart;
 }
 
+int PhraseScheduler::startBoundaryGracePhrase() noexcept
+{
+    // Give a normally due phrase its last chance before advancing the chord
+    // cursor. Without this, the new boundary immediately expires it.
+    if (const int duePhrase = startDueGuitarPhrase(); duePhrase >= 0)
+        return duePhrase;
+
+    if (song == nullptr
+        || currentChordEventIndex < 0
+        || nextChordEventIndex < 0
+        || nextPhraseIndex >= static_cast<int>(song->getPhrases().size()))
+        return -1;
+
+    const auto& phrase =
+        song->getPhrases()[static_cast<size_t>(nextPhraseIndex)];
+    if (phrase.anchorChordEventIndex != currentChordEventIndex)
+        return -1;
+
+    const double nextBoundaryScoreSeconds =
+        song->getChordTimeline()[static_cast<size_t>(
+            nextChordEventIndex)].startSeconds;
+    const double writtenLeadToBoundary =
+        nextBoundaryScoreSeconds - phrase.sourceStartSeconds;
+    // Only rescue a final mora whose written target was within 110 ms of the
+    // newly observed boundary. Anything farther behind is genuinely stale
+    // and remains expired rather than bursting into the next chord.
+    if (writtenLeadToBoundary < 0.0
+        || writtenLeadToBoundary > 0.110)
+        return -1;
+    if (lastStartedPhraseIndex >= 0
+        && performanceTimeSeconds - lastPhraseTriggerPerformanceSeconds
+            < 0.050)
+        return -1;
+
+    const int phraseToStart = nextPhraseIndex++;
+    pendingDuePhraseIndex = -1;
+    lastStartedPhraseIndex = phraseToStart;
+    lastPhraseTriggerPerformanceSeconds = performanceTimeSeconds;
+    return phraseToStart;
+}
+
 int PhraseScheduler::startNextAutomaticPhrase() noexcept
 {
     if (song == nullptr
@@ -929,10 +991,13 @@ int PhraseScheduler::processBlock(
             inactiveTailSeconds += elapsed;
         }
     }
+    int boundaryPhrase = -1;
     if (manualTrigger)
-        advanceChordCursor(true, onsetStrength);
+        advanceChordCursor(
+            true, onsetStrength, &boundaryPhrase);
     else if (guitarOnset)
-        advanceChordCursor(false, onsetStrength);
+        advanceChordCursor(
+            false, onsetStrength, &boundaryPhrase);
     if (chordEvidence != nullptr && chordEvidence->valid && running)
         applyChordEvidence(*chordEvidence);
 
@@ -948,7 +1013,9 @@ int PhraseScheduler::processBlock(
         songTimeSeconds = std::min(songTimeSeconds, boundary - 1.0e-4);
     }
 
-    return startDueGuitarPhrase();
+    return boundaryPhrase >= 0
+        ? boundaryPhrase
+        : startDueGuitarPhrase();
 }
 
 } // namespace mode1

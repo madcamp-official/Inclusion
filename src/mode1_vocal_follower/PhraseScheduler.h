@@ -29,7 +29,7 @@ public:
         // vowel lands on the predicted guitar beat. This is compensation for
         // the output block and scheduler uncertainty, not musical look-ahead.
         guitarVocalLeadSeconds = juce::jlimit(
-            0.035, 0.10, seconds + 0.050);
+            0.020, 0.08, seconds + 0.025);
     }
     void reset() noexcept;
 
@@ -104,7 +104,9 @@ private:
     void applyChordEvidence(const ChordEvidence& evidence) noexcept;
     int advanceChordCursor(
         bool force,
-        float onsetStrength = 1.0f) noexcept;
+        float onsetStrength = 1.0f,
+        int* boundaryPhrase = nullptr) noexcept;
+    int startBoundaryGracePhrase() noexcept;
     int startDueGuitarPhrase() noexcept;
     int startNextAutomaticPhrase() noexcept;
 
@@ -139,7 +141,7 @@ private:
     int timingAnchorCount = 0;
     int acceptedTimingAnchorCount = 0;
     int rejectedTimingAnchorCount = 0;
-    double guitarVocalLeadSeconds = 0.050;
+    double guitarVocalLeadSeconds = 0.025;
 };
 
 } // namespace mode1
