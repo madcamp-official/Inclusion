@@ -300,15 +300,153 @@ public:
         expectWithinAbsoluteError(GuitarTargetTracker::quantizeMidiWithHysteresis(55.9f, true, 57.0f),
                                   56.0f, 1.0e-6f);
 
-        beginTest(utf8("같은 음의 옥타브 오검출은 직전 목표 근처로 되접는다"));
+        beginTest(utf8("확인되지 않은 옥타브 검출은 오검출로 보고 직전 목표로 되접는다"));
         expectWithinAbsoluteError(GuitarTargetTracker::quantizeMidiWithHysteresis(69.08f, true, 57.0f),
                                   57.0f, 1.0e-6f);
         expectWithinAbsoluteError(GuitarTargetTracker::quantizeMidiWithHysteresis(32.95f, true, 57.0f),
                                   57.0f, 1.0e-6f);
+
+        beginTest(utf8("확인된 옥타브 이동은 되접지 않고 그대로 따라간다"));
+        expectWithinAbsoluteError(
+            GuitarTargetTracker::quantizeMidiWithHysteresis(69.08f, true, 57.0f, true),
+            69.0f, 1.0e-6f);
+        expectWithinAbsoluteError(
+            GuitarTargetTracker::quantizeMidiWithHysteresis(32.95f, true, 57.0f, true),
+            33.0f, 1.0e-6f);
+        // 확인 플래그는 옥타브 되접기만 건너뛴다. 반음 히스테리시스는 그대로 걸려야 한다.
+        expectWithinAbsoluteError(
+            GuitarTargetTracker::quantizeMidiWithHysteresis(57.31f, true, 57.0f, true),
+            57.0f, 1.0e-6f);
+
+        beginTest(utf8("되접기 대상 판별은 정확히 ±12·24반음일 때만이다"));
+        expect(GuitarTargetTracker::isOctaveFoldCandidate(69.0f, 57.0f));
+        expect(GuitarTargetTracker::isOctaveFoldCandidate(33.0f, 57.0f));
+        expect(GuitarTargetTracker::isOctaveFoldCandidate(81.0f, 57.0f));
+        expect(! GuitarTargetTracker::isOctaveFoldCandidate(68.0f, 57.0f));
+        expect(! GuitarTargetTracker::isOctaveFoldCandidate(70.0f, 57.0f));
+        expect(! GuitarTargetTracker::isOctaveFoldCandidate(62.0f, 57.0f));
     }
 };
 
 static GuitarNoteQuantizerTests guitarNoteQuantizerTests;
+
+// 연주자가 "충분히 뮤트했다"고 느끼는 상태에서 목표가 잔향을 물지 않는지, 그리고 진짜
+// 옥타브 이동은 따라가는지. 둘 다 검출기 단독으로는 안 보이고 트래커 전체를 돌려야 한다.
+class GuitarTargetTrackerTests : public juce::UnitTest
+{
+public:
+    GuitarTargetTrackerTests() : juce::UnitTest("GuitarTargetTracker") {}
+
+    static double midiToHz(int midi)
+    {
+        return 440.0 * std::pow(2.0, (midi - 69) / 12.0);
+    }
+
+    // 배음이 있는 뜯은 줄 한 음을 blocks만큼 만들어 트래커에 흘린다.
+    // decaySeconds가 짧으면 손 뮤트, 길면 자연 감쇠다.
+    static GuitarTargetTracker::Output feed(GuitarTargetTracker& tracker, double sampleRate,
+                                            int blockSize, int blocks, double f0, double amp,
+                                            double decaySeconds, double& timeSeconds)
+    {
+        std::vector<float> block(static_cast<size_t>(blockSize), 0.0f);
+        GuitarTargetTracker::Output out;
+        for (int b = 0; b < blocks; ++b)
+        {
+            for (int i = 0; i < blockSize; ++i)
+            {
+                const double t = timeSeconds + i / sampleRate;
+                const double env = amp * std::exp(-t / decaySeconds);
+                double s = 0.0;
+                for (int h = 1; h <= 6; ++h)
+                    s += std::sin(2.0 * juce::MathConstants<double>::pi * f0 * h * t) / h;
+                block[static_cast<size_t>(i)] = static_cast<float>(env * s);
+            }
+            timeSeconds += blockSize / sampleRate;
+            out = tracker.processBlock(block.data(), blockSize);
+        }
+        return out;
+    }
+
+    void runTest() override
+    {
+        constexpr double sampleRate = 44100.0;
+        constexpr int blockSize = 256;
+        const int blocksPerSecond = static_cast<int>(sampleRate / blockSize);
+
+        beginTest(utf8("자연 감쇠로 길게 울리는 음은 목표를 유지한다"));
+        {
+            GuitarTargetTracker tracker;
+            tracker.prepare(sampleRate);
+            double t = 0.0;
+            const auto out = feed(tracker, sampleRate, blockSize, blocksPerSecond,
+                                  midiToHz(45), 0.30, 1.8, t);
+            expect(out.hasTarget, utf8("1초 뒤에도 목표가 있어야 한다"));
+            if (out.hasTarget)
+                expectWithinAbsoluteError(out.targetMidi, 45.0f, 0.5f);
+        }
+
+        beginTest(utf8("손으로 뮤트하면 잔향을 목표로 물지 않는다"));
+        {
+            GuitarTargetTracker tracker;
+            tracker.prepare(sampleRate);
+            double t = 0.0;
+            // 0.5초 동안 A2를 정상적으로 울린 뒤,
+            auto out = feed(tracker, sampleRate, blockSize, blocksPerSecond / 2,
+                            midiToHz(45), 0.30, 1.8, t);
+            expect(out.hasTarget, utf8("뮤트 전에는 목표가 있어야 한다"));
+
+            // 같은 음을 60ms 시정수로 급감시킨다(손 뮤트). 0.4초면 피크의 -29dB 아래다.
+            double mt = 0.0;
+            std::vector<float> block(static_cast<size_t>(blockSize), 0.0f);
+            const double f0 = midiToHz(45);
+            const double startAmp = 0.30 * std::exp(-t / 1.8);
+            for (int b = 0; b < blocksPerSecond * 2 / 5; ++b)
+            {
+                for (int i = 0; i < blockSize; ++i)
+                {
+                    const double tt = mt + i / sampleRate;
+                    const double env = startAmp * std::exp(-tt / 0.06);
+                    double s = 0.0;
+                    for (int h = 1; h <= 6; ++h)
+                        s += std::sin(2.0 * juce::MathConstants<double>::pi * f0 * (t + tt) * h) / h;
+                    block[static_cast<size_t>(i)] = static_cast<float>(env * s);
+                }
+                mt += blockSize / sampleRate;
+                out = tracker.processBlock(block.data(), blockSize);
+            }
+            // 뮤트가 충분히 진행되면 COAST를 거쳐 목표를 놓아야 한다. 여기서 목표를 계속
+            // 들고 있으면 옆 줄 잔향이 그대로 다음 목표가 되는 경로가 열린다.
+            expect(out.state == PitchStabilizer::State::Coast
+                       || out.state == PitchStabilizer::State::Idle,
+                   utf8("뮤트 뒤 COAST/IDLE이어야 하는데 실제: ")
+                       + juce::String(static_cast<int>(out.state)));
+        }
+
+        beginTest(utf8("진짜 한 옥타브 위 음은 목표로 잡힌다 (A2 -> A3)"));
+        {
+            GuitarTargetTracker tracker;
+            tracker.prepare(sampleRate);
+            double t = 0.0;
+            auto out = feed(tracker, sampleRate, blockSize, blocksPerSecond / 2,
+                            midiToHz(45), 0.30, 1.8, t);
+            expect(out.hasTarget && std::abs(out.targetMidi - 45.0f) < 0.5f,
+                   utf8("먼저 A2를 잡아야 한다"));
+
+            // 새 음을 새로 뜯는다(시간축을 0부터 다시 시작해 어택이 생기게).
+            GuitarTargetTracker::Output after;
+            double t2 = 0.0;
+            for (int b = 0; b < blocksPerSecond; ++b)
+                after = feed(tracker, sampleRate, blockSize, 1, midiToHz(57), 0.30, 1.8, t2);
+
+            expect(after.hasTarget, utf8("A3에서 목표가 있어야 한다"));
+            if (after.hasTarget)
+                expectWithinAbsoluteError(after.targetMidi, 57.0f, 0.5f,
+                                          utf8("A2에 붙잡혀 있으면 옥타브 가드 회귀다"));
+        }
+    }
+};
+
+static GuitarTargetTrackerTests guitarTargetTrackerTests;
 
 class NoiseGateTests : public juce::UnitTest
 {

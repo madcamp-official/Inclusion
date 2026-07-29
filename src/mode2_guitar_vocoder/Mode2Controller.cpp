@@ -217,7 +217,16 @@ void Mode2Controller::processBlock(const float* guitarIn, const float* vocalIn, 
     // 를 하면 전환 구간에서 서로 다른 시점의 목소리 두 개가 겹쳐 콤 필터링과 이중 음정이
     // 생긴다. 0-semitone 시프터 출력은 음정상 드라이지만 처리 지연은 wet과 같으므로
     // 한 경로만 유지하면 그 문제가 없다.
-    const float correctionMix = guitarOut.fadeGain * vocalWetGain;
+    // guitarOut.fadeGain은 오디오 게인이 아니라 아래에서 **보정 반음 수**에 곱해진다. 그래서
+    // 목표를 잃고 페이드가 걸리면 소리가 잦아드는 게 아니라 음정이 목표에서 원래 목소리로
+    // 연속으로 미끄러진다 — 글리산도("위웅")가 된다. 옥타브 이동 -1이면 2옥타브를 훑는다.
+    // 목소리 신뢰도 경로가 같은 이유로 이미 드라이 복귀를 끈 것과 같은 판단을 여기에도 적용해,
+    // 한번 보정을 잡았으면 페이드로 되돌리지 않고 직전 보정을 그대로 물고 있는다.
+    const float guitarFadeGain =
+        (! mode2::params::guitarTargetFallbackToDry && haveVocalCorrection)
+            ? 1.0f
+            : guitarOut.fadeGain;
+    const float correctionMix = guitarFadeGain * vocalWetGain;
     const float effectiveCorrectionSemitones = correctionSemitones * correctionMix;
 
     // WORLD에는 "몇 반음 옮겨라"보다 기타의 절대 F0를 직접 준다. 이 경로에서는 WORLD가
