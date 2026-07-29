@@ -15,6 +15,9 @@
 #   airpods   (기본) 출력=에어팟, 목소리=에어팟 마이크, 기타=Scarlett 악기 잭
 #             전부 귀로만 듣는 구성. 하울링이 없다. 무선이라 왕복 80ms대라 연주감(타이밍)
 #             평가에는 못 쓴다.
+#   scarlett  출력=맥북 스피커, 목소리=Scarlett INPUT 1, 기타=Scarlett INPUT 2
+#             불필요한 맥북 마이크를 통합 기기에서 빼서 지연을 줄인다. Rubber Band R3가
+#             끊기지 않도록 버퍼는 안전한 256을 유지한다.
 #   builtin   출력=맥북 스피커, 목소리=맥북 내장 마이크, 기타=Scarlett 악기 잭
 #             스피커로 들을 때 쓴다. 44.1kHz로 돌아 제어 갱신이 두 배 빠른 유일한 구성이다.
 #             스피커+열린 마이크라 하울링 고리가 생긴다 — 앱의 "하울링 억제"를 켜고
@@ -41,8 +44,10 @@ if [ "$1" = "--no-launch" ]; then
     shift
 fi
 
+buffer_size=256
 case "${1:-airpods}" in
     airpods)  device_name="Scarlett + AirPods";                  output="AirPods";     mic="AirPods";      room="MacBook Pro 마이크" ;;
+    scarlett) device_name="Scarlett + Mac Speakers";             output="MacBook Pro"; mic="Scarlett Solo"; room=""; buffer_size=256 ;;
     speakers)
         # 이 조합은 만들 수 없다. 앱 녹음으로 확인(2026-07-28): 출력이 맥북 스피커면
         # 목소리 채널이 정확히 0이고, 같은 기기에서 출력만 에어팟으로 바꾸면 -54dB로 살아난다.
@@ -58,7 +63,7 @@ case "${1:-airpods}" in
     builtin)  device_name="Guitar + Built-in Mic";               output="MacBook Pro"; mic="MacBook Pro";  room="" ;;
     *)
         echo "알 수 없는 프리셋: $1"
-        echo "쓸 수 있는 값: airpods, speakers, builtin"
+        echo "쓸 수 있는 값: airpods, scarlett, speakers, builtin"
         exit 1 ;;
 esac
 guitar="Scarlett Solo"
@@ -77,7 +82,11 @@ cmake --build build --target Mode2AudioDevice >/dev/null
 # 방 마이크(스피커 앞에서 실제 들리는 소리를 받는 마이크)를 입력으로 하나 더 붙인다.
 # 처리에는 쓰지 않고 녹음에만 담긴다 — 앱 출력과 유튜브 반주가 섞인 "실제로 들린 소리"가
 # 한 파일에 남아야 나중에 그대로 다시 들어볼 수 있다.
-if [ -n "$room" ]; then
+if [ "$mic" = "$guitar" ]; then
+    # Scarlett 하나에서 INPUT 1(마이크)과 INPUT 2(기타)를 함께 받는다.
+    # 같은 서브기기를 두 번 넣으면 안 되므로 한 번만 추가한다.
+    layout=$(build/Mode2AudioDevice create "$device_name" "$output" "$guitar")
+elif [ -n "$room" ]; then
     layout=$(build/Mode2AudioDevice create "$device_name" "$output" "$mic" "$guitar" "$room")
 else
     layout=$(build/Mode2AudioDevice create "$device_name" "$output" "$mic" "$guitar")
@@ -87,8 +96,13 @@ echo "$layout"
 # 채널 번호는 도구가 찍어 준 배치에서 그대로 읽는다("입력 ch1-2 (앱: 채널 2-3) Scarlett...").
 # 목소리는 마이크 기기의 첫 채널, 기타는 인터페이스의 마지막 채널이다
 # (Scarlett Solo는 INPUT 1=XLR, INPUT 2=악기 잭이라 악기 잭이 뒤에 온다).
-vocal_ch=$(echo "$layout" | awk -v g="$guitar" '/입력 ch/ && index($0, g) == 0 { split($2, a, /ch|-/); print a[2]; exit }')
-guitar_ch=$(echo "$layout" | awk -v g="$guitar" '/입력 ch/ && index($0, g)  > 0 { split($2, a, /ch|-/); print a[3]; exit }')
+if [ "$mic" = "$guitar" ]; then
+    vocal_ch=$(echo "$layout" | awk -v g="$guitar" '/입력 ch/ && index($0, g) > 0 { split($2, a, /ch|-/); print a[2]; exit }')
+    guitar_ch=$(echo "$layout" | awk -v g="$guitar" '/입력 ch/ && index($0, g) > 0 { split($2, a, /ch|-/); print a[3]; exit }')
+else
+    vocal_ch=$(echo "$layout" | awk -v g="$guitar" '/입력 ch/ && index($0, g) == 0 { split($2, a, /ch|-/); print a[2]; exit }')
+    guitar_ch=$(echo "$layout" | awk -v g="$guitar" '/입력 ch/ && index($0, g)  > 0 { split($2, a, /ch|-/); print a[3]; exit }')
+fi
 # 괄호로 필드를 자르면 안 된다 — 기기 이름 자체에 괄호가 들어간다("... (Mac Speakers)").
 # "(48000Hz)" 형태만 정확히 집는다.
 rate=$(echo "$layout" | sed -n 's/.*(\([0-9][0-9.]*\)Hz).*/\1/p' | head -1)
@@ -110,7 +124,7 @@ cat > "$settings_dir/AudioDeviceSettings.xml" <<XML
 
 <DEVICESETUP deviceType="CoreAudio" audioOutputDeviceName="$device_name"
              audioInputDeviceName="$device_name" audioDeviceRate="$rate.0"
-             audioDeviceBufferSize="256"/>
+             audioDeviceBufferSize="$buffer_size"/>
 XML
 cat > "$settings_dir/Mode2ChannelMap.xml" <<XML
 <?xml version="1.0" encoding="UTF-8"?>
@@ -119,7 +133,7 @@ cat > "$settings_dir/Mode2ChannelMap.xml" <<XML
 XML
 
 echo
-echo "앱 설정을 적었습니다: 기기 \"$device_name\" ${rate}Hz,"
+echo "앱 설정을 적었습니다: 기기 \"$device_name\" ${rate}Hz, 버퍼 ${buffer_size},"
 echo "  목소리 = 채널 $((vocal_ch + 1)), 기타 = 채널 $((guitar_ch + 1)) (화면 표시 기준)"
 if [ "$room_ch" -ge 0 ] 2>/dev/null; then
     echo "  녹음에 함께 담을 채널 = 채널 $((room_ch + 1)) ($room)"

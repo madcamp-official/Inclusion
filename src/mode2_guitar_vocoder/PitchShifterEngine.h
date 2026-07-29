@@ -28,6 +28,7 @@ public:
     {
         World,
         RubberBand,
+        RubberBandLowLatency,
         SoundTouch
     };
 
@@ -68,6 +69,10 @@ private:
     std::vector<float> rubberBandReceiveScratch;
     std::vector<float> rubberBandSilentPad;
     size_t rubberBandSamplesToDiscard = 0;
+    size_t rubberBandStartDelaySamples = 0;
+    size_t rubberBandSafetyDelaySamples = 0;
+    int rubberBandRecoveryFadeSamples = 0;
+    float lastRubberBandOutputSample = 0.0f;
 #endif
 
 #if defined(HAVE_SOUNDTOUCH)

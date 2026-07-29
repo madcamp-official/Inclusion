@@ -15,6 +15,7 @@ bool PitchShifterEngine::isBackendAvailable(Backend backend)
             return false;
 #endif
         case Backend::RubberBand:
+        case Backend::RubberBandLowLatency:
 #if defined(HAVE_RUBBERBAND)
             return true;
 #else
@@ -35,7 +36,8 @@ const char* PitchShifterEngine::getBackendName(Backend backend)
     switch (backend)
     {
         case Backend::World: return "world";
-        case Backend::RubberBand: return "rubberband";
+        case Backend::RubberBand: return "rubberband-r3";
+        case Backend::RubberBandLowLatency: return "rubberband-r2-low-latency";
         case Backend::SoundTouch: return "soundtouch";
     }
     return "unknown";
@@ -64,8 +66,12 @@ void PitchShifterEngine::prepare(double sampleRateIn, int maxBlockSize)
 
 #if defined(HAVE_RUBBERBAND)
     using Stretcher = RubberBand::RubberBandStretcher;
+    const bool useLowLatencyRubberBand =
+        activeBackend == Backend::RubberBandLowLatency;
     const auto options = Stretcher::OptionProcessRealTime
-                       | Stretcher::OptionEngineFiner
+                       | (useLowLatencyRubberBand
+                              ? Stretcher::OptionEngineFaster
+                              : Stretcher::OptionEngineFiner)
                        | Stretcher::OptionWindowShort
                        | Stretcher::OptionFormantPreserved
                        | Stretcher::OptionPitchHighConsistency;
@@ -77,6 +83,12 @@ void PitchShifterEngine::prepare(double sampleRateIn, int maxBlockSize)
     rubberBand->setMaxProcessSize(static_cast<size_t>(maxBlockSize));
     rubberBandReceiveScratch.assign(static_cast<size_t>(maxBlockSize) * 4, 0.0f);
     rubberBandSilentPad.assign(static_cast<size_t>(maxBlockSize), 0.0f);
+    rubberBandStartDelaySamples = rubberBand->getStartDelay();
+    // R2는 처리량이 평균적으로는 1:1이어도 개별 콜백에서 최대 수십~수백 샘플 적게
+    // 내놓을 수 있다. R2에만 콜백 한 블록의 탄력 큐를 둔다. 드물게 이것까지 바닥나면
+    // 아래의 짧은 페이드가 급격한 0↔파형 경계를 감춘다. R3는 기존 지연을 늘리지 않는다.
+    rubberBandSafetyDelaySamples =
+        useLowLatencyRubberBand ? static_cast<size_t>(maxBlockSize) : 0;
 #endif
 
 #if defined(HAVE_SOUNDTOUCH)
@@ -95,8 +107,11 @@ void PitchShifterEngine::prepare(double sampleRateIn, int maxBlockSize)
 #endif
 
 #if defined(HAVE_RUBBERBAND)
-    if (activeBackend == Backend::RubberBand && rubberBand != nullptr)
-        latencySamples = static_cast<int>(rubberBand->getStartDelay());
+    if ((activeBackend == Backend::RubberBand
+         || activeBackend == Backend::RubberBandLowLatency)
+        && rubberBand != nullptr)
+        latencySamples = static_cast<int>(
+            rubberBandStartDelaySamples + rubberBandSafetyDelaySamples);
 #endif
 #if defined(HAVE_WORLD)
     if (activeBackend == Backend::World)
@@ -124,11 +139,13 @@ void PitchShifterEngine::reset()
         rubberBand->reset();
         rubberBand->setPitchScale(1.0);
         rubberBandOutputQueue.clear();
+        rubberBandRecoveryFadeSamples = 0;
+        lastRubberBandOutputSample = 0.0f;
 
         // 실시간 모드는 시작 패딩/지연 보상을 호출자가 해야 한다. prepare/reset 시 무음을
         // 미리 넣고, 그 출력의 start delay만 버려 실제 첫 음절이 잘리지 않게 한다.
         size_t padRemaining = rubberBand->getPreferredStartPad();
-        rubberBandSamplesToDiscard = static_cast<size_t>(latencySamples);
+        rubberBandSamplesToDiscard = rubberBandStartDelaySamples;
         while (padRemaining > 0)
         {
             const size_t chunk = std::min(padRemaining, rubberBandSilentPad.size());
@@ -151,6 +168,11 @@ void PitchShifterEngine::reset()
                     rubberBandReceiveScratch.begin() + static_cast<std::ptrdiff_t>(received));
             }
         }
+
+        // 실제 입력보다 앞에 안전 여유분을 둔다. 이후 R2가 한 콜백에서 조금 덜
+        // 출력해도 이 큐가 흡수하므로 오디오 콜백에 0 샘플을 노출하지 않는다.
+        rubberBandOutputQueue.insert(rubberBandOutputQueue.begin(),
+                                     rubberBandSafetyDelaySamples, 0.0f);
     }
 #endif
 
@@ -188,7 +210,9 @@ void PitchShifterEngine::processBlock(const float* input, float* output, int num
 #endif
 
 #if defined(HAVE_RUBBERBAND)
-    if (activeBackend == Backend::RubberBand && rubberBand != nullptr)
+    if ((activeBackend == Backend::RubberBand
+         || activeBackend == Backend::RubberBandLowLatency)
+        && rubberBand != nullptr)
     {
         processRubberBand(input, output, numSamples);
         return;
@@ -230,8 +254,37 @@ void PitchShifterEngine::processRubberBand(const float* input, float* output, in
 
     const int toCopy = std::min(static_cast<int>(rubberBandOutputQueue.size()), numSamples);
     for (int i = 0; i < toCopy; ++i)
-        output[i] = rubberBandOutputQueue[static_cast<size_t>(i)];
-    std::fill(output + toCopy, output + numSamples, 0.0f);
+    {
+        float sample = rubberBandOutputQueue[static_cast<size_t>(i)];
+        if (rubberBandRecoveryFadeSamples > 0)
+        {
+            constexpr int recoveryLength = 64;
+            const float gain =
+                1.0f - static_cast<float>(rubberBandRecoveryFadeSamples)
+                           / static_cast<float>(recoveryLength);
+            sample *= std::clamp(gain, 0.0f, 1.0f);
+            --rubberBandRecoveryFadeSamples;
+        }
+        output[i] = sample;
+    }
+
+    const int missing = numSamples - toCopy;
+    if (missing > 0)
+    {
+        // 0으로 즉시 자르면 마지막 실제 샘플과 0 사이의 수직 경계가 클릭이 된다.
+        // 마지막 값에서 0까지 짧게 내려가고, 다음 실제 출력의 앞 64샘플도 올려 붙인다.
+        const float start = toCopy > 0 ? output[toCopy - 1] : lastRubberBandOutputSample;
+        for (int i = 0; i < missing; ++i)
+        {
+            const float gain =
+                1.0f - static_cast<float>(i + 1) / static_cast<float>(missing);
+            output[toCopy + i] = start * gain;
+        }
+        rubberBandRecoveryFadeSamples = 64;
+    }
+
+    if (numSamples > 0)
+        lastRubberBandOutputSample = output[numSamples - 1];
     rubberBandOutputQueue.erase(rubberBandOutputQueue.begin(),
                                 rubberBandOutputQueue.begin() + toCopy);
 #else

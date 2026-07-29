@@ -39,8 +39,11 @@ private:
     long long samplesInState = 0;
     float lastValidMidi = 0.0f;
     int collectedStableCount = 0;
-    // STABLE에서 목표를 벗어난 피치가 연속으로 몇 블록 관측됐는지(온셋 없는 음 변화 감지용).
-    int stableDeviationBlocks = 0;
+    // STABLE에서 목표를 벗어난 동일 후보가 유지된 시간. 서로 다른 잡음 피치는 누적하지 않는다.
+    long long stableDeviationSamples = 0;
+    long long stableReacquireSamples = 0;
+    bool haveStableDeviationCandidate = false;
+    float stableDeviationCandidateMidi = 0.0f;
 
     bool haveConfirmedTarget = false;
     float confirmedTargetMidi = 0.0f;
@@ -50,5 +53,6 @@ private:
     long long coastFadeSamples = 0;
 
     void enterState(State newState);
+    void resetStableDeviationCandidate();
     float computeFadeGain() const;
 };

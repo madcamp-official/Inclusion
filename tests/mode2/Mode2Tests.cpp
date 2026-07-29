@@ -182,6 +182,60 @@ public:
             expectWithinAbsoluteError(moveOut.fadeGain, 1.0f, 0.001f);
         }
 
+        beginTest(utf8("연주 중 짧은 온셋과 불안정한 다른 음은 목표를 바꾸지 않는다"));
+        {
+            PitchStabilizer touchFilter;
+            touchFilter.prepare(44100.0);
+
+            PitchDetector::Result steady;
+            steady.valid = true;
+            steady.midiFloat = 60.0f;
+            steady.confidence = 0.9f;
+
+            PitchStabilizer::Output touchOut {};
+            for (int i = 0; i < 40; ++i)
+                touchOut = touchFilter.processBlock(false, steady, blockSize);
+            expect(touchOut.state == PitchStabilizer::State::Stable);
+
+            const float incidentalNotes[] { 67.0f, 72.0f, 65.0f, 69.0f };
+            for (int i = 0; i < 4; ++i)
+            {
+                PitchDetector::Result touch = steady;
+                touch.midiFloat = incidentalNotes[i];
+                touchOut = touchFilter.processBlock(i == 0, touch, blockSize);
+                expect(touchOut.state == PitchStabilizer::State::Stable);
+                expectWithinAbsoluteError(touchOut.targetMidi, 60.0f, 0.01f);
+            }
+
+            touchOut = touchFilter.processBlock(false, steady, blockSize);
+            expectWithinAbsoluteError(touchOut.targetMidi, 60.0f, 0.01f);
+        }
+
+        beginTest(utf8("짧은 피치 검출 누락 뒤에는 직전 목표로 즉시 복귀한다"));
+        {
+            PitchStabilizer dropoutFilter;
+            dropoutFilter.prepare(44100.0);
+
+            PitchDetector::Result steady;
+            steady.valid = true;
+            steady.midiFloat = 60.0f;
+            steady.confidence = 0.9f;
+
+            PitchStabilizer::Output dropoutOut {};
+            for (int i = 0; i < 40; ++i)
+                dropoutOut = dropoutFilter.processBlock(false, steady, blockSize);
+
+            PitchDetector::Result missing;
+            dropoutOut = dropoutFilter.processBlock(false, missing, blockSize);
+            expect(dropoutOut.state == PitchStabilizer::State::Coast);
+            expect(dropoutOut.hasTarget);
+
+            dropoutOut = dropoutFilter.processBlock(false, steady, blockSize);
+            expect(dropoutOut.state == PitchStabilizer::State::Stable);
+            expect(dropoutOut.hasTarget);
+            expectWithinAbsoluteError(dropoutOut.targetMidi, 60.0f, 0.01f);
+        }
+
         beginTest(utf8("IDLE에서 온셋 없이 유효한 피치만으로 목표를 잡는다"));
         {
             PitchStabilizer fresh;
@@ -501,6 +555,7 @@ public:
     void runTest() override
     {
         for (const auto backend : { PitchShifterEngine::Backend::RubberBand,
+                                    PitchShifterEngine::Backend::RubberBandLowLatency,
                                     PitchShifterEngine::Backend::SoundTouch })
         {
             if (! PitchShifterEngine::isBackendAvailable(backend))
@@ -562,6 +617,64 @@ public:
                 : 0.0f;
             expectGreaterThan(outputRms, 0.01f, "steady-state output should be audible");
             expectEquals(silentBlocksAfterWarmup, 0, "steady-state callback dropout");
+        }
+
+        if (PitchShifterEngine::isBackendAvailable(PitchShifterEngine::Backend::RubberBand))
+        {
+            beginTest("rubberband R2 low-latency mode reports less delay than R3");
+
+            PitchShifterEngine r3;
+            r3.setBackend(PitchShifterEngine::Backend::RubberBand);
+            r3.prepare(48000.0, 256);
+
+            PitchShifterEngine r2;
+            r2.setBackend(PitchShifterEngine::Backend::RubberBandLowLatency);
+            r2.prepare(48000.0, 256);
+
+            expectGreaterThan(r3.getLatencySamples(), r2.getLatencySamples());
+
+            beginTest("rubberband R2 dynamic shifts do not expose zero-filled queue underruns");
+
+            r2.setGlideRate(100000.0f);
+            r2.prepare(48000.0, 256);
+
+            std::vector<float> input(256);
+            std::vector<float> output(256);
+            double phase = 0.0;
+            int consecutiveExactZeros = 0;
+            int longestExactZeroRun = 0;
+            for (int block = 0; block < 300; ++block)
+            {
+                for (int i = 0; i < 256; ++i)
+                {
+                    input[static_cast<size_t>(i)] =
+                        0.2f * std::sin(static_cast<float>(phase));
+                    phase += 2.0 * juce::MathConstants<double>::pi * 220.0 / 48000.0;
+                }
+
+                const float shift = (block / 7) % 2 == 0 ? -12.0f : 7.0f;
+                r2.processBlock(input.data(), output.data(), 256, shift);
+
+                if (block < 30)
+                    continue;
+
+                for (const float sample : output)
+                {
+                    if (sample == 0.0f)
+                    {
+                        ++consecutiveExactZeros;
+                        longestExactZeroRun =
+                            std::max(longestExactZeroRun, consecutiveExactZeros);
+                    }
+                    else
+                    {
+                        consecutiveExactZeros = 0;
+                    }
+                }
+            }
+
+            expectLessOrEqual(longestExactZeroRun, 2,
+                              "queue underrun must not be exposed as a zero run");
         }
 
         if (PitchShifterEngine::isBackendAvailable(PitchShifterEngine::Backend::World))

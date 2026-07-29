@@ -1,6 +1,7 @@
 #include "PitchStabilizer.h"
 #include "params/Mode2Params.h"
 
+#include <algorithm>
 #include <cmath>
 
 void PitchStabilizer::prepare(double sampleRateIn)
@@ -9,6 +10,8 @@ void PitchStabilizer::prepare(double sampleRateIn)
     attackSettleSamples = static_cast<long long>(mode2::params::attackSettleSeconds * sampleRate);
     coastHoldSamples = static_cast<long long>(mode2::params::coastHoldSeconds * sampleRate);
     coastFadeSamples = static_cast<long long>(mode2::params::coastFadeSeconds * sampleRate);
+    stableReacquireSamples = std::max(
+        1LL, static_cast<long long>(mode2::params::stableReacquireSeconds * sampleRate));
     reset();
 }
 
@@ -18,7 +21,7 @@ void PitchStabilizer::reset()
     samplesInState = 0;
     lastValidMidi = 0.0f;
     collectedStableCount = 0;
-    stableDeviationBlocks = 0;
+    resetStableDeviationCandidate();
     haveConfirmedTarget = false;
     confirmedTargetMidi = 0.0f;
 }
@@ -30,7 +33,14 @@ void PitchStabilizer::enterState(State newState)
     if (newState == State::Collect)
         collectedStableCount = 0;
     if (newState == State::Stable)
-        stableDeviationBlocks = 0;
+        resetStableDeviationCandidate();
+}
+
+void PitchStabilizer::resetStableDeviationCandidate()
+{
+    stableDeviationSamples = 0;
+    haveStableDeviationCandidate = false;
+    stableDeviationCandidateMidi = 0.0f;
 }
 
 float PitchStabilizer::computeFadeGain() const
@@ -64,7 +74,9 @@ float PitchStabilizer::computeFadeGain() const
 
 PitchStabilizer::Output PitchStabilizer::processBlock(bool onsetDetected, const PitchDetector::Result& pitch, int numSamples)
 {
-    if (onsetDetected && state != State::Attack)
+    // 연주가 이미 안정된 상태에서 발생하는 온셋은 옆 줄 스침이나 프렛 잡음일 수 있다.
+    // STABLE의 목표는 피치가 실제로 일정 시간 바뀐 경우에만 아래 분기에서 재조준한다.
+    if (onsetDetected && (state == State::Idle || state == State::Coast))
         enterState(State::Attack);
 
     switch (state)
@@ -114,13 +126,34 @@ PitchStabilizer::Output PitchStabilizer::processBlock(bool onsetDetected, const 
                 if (std::abs(pitch.midiFloat - confirmedTargetMidi) <= mode2::params::stableToleranceSemitones)
                 {
                     confirmedTargetMidi = pitch.midiFloat;
-                    stableDeviationBlocks = 0;
+                    resetStableDeviationCandidate();
                 }
-                else if (++stableDeviationBlocks >= mode2::params::stableReacquireBlocks)
+                else
                 {
-                    // 온셋 없이 음이 바뀌었다. 여기에 분기가 없으면 낡은 목표를 계속 물고 있게 된다.
-                    // 재조준 중에도 haveConfirmedTarget은 유지되므로 fadeGain이 1로 남아 소리가 끊기지 않는다.
-                    enterState(State::Collect);
+                    const bool sameCandidate =
+                        haveStableDeviationCandidate
+                        && std::abs(pitch.midiFloat - stableDeviationCandidateMidi)
+                               <= mode2::params::collectConvergenceToleranceSemitones;
+
+                    if (!sameCandidate)
+                    {
+                        haveStableDeviationCandidate = true;
+                        stableDeviationCandidateMidi = pitch.midiFloat;
+                        stableDeviationSamples = numSamples;
+                    }
+                    else
+                    {
+                        stableDeviationCandidateMidi = pitch.midiFloat;
+                        stableDeviationSamples += numSamples;
+                    }
+
+                    if (stableDeviationSamples >= stableReacquireSamples)
+                    {
+                        // 온셋 없이도 실제 음이 바뀔 수 있다. 같은 후보가 충분히 유지된 경우에만
+                        // 재조준하고, 그동안은 직전 확정 목표를 유지해 스침 잡음에 흔들리지 않는다.
+                        lastValidMidi = stableDeviationCandidateMidi;
+                        enterState(State::Collect);
+                    }
                 }
             }
             else
@@ -130,6 +163,13 @@ PitchStabilizer::Output PitchStabilizer::processBlock(bool onsetDetected, const 
             break;
 
         case State::Coast:
+            if (pitch.valid)
+            {
+                // 한두 블록의 검출 누락은 흔하다. 신호가 돌아오면 긴 HOLD/FADE를 끝까지
+                // 기다리지 말고 직전 목표를 유지한 채 즉시 정상 추적으로 복귀한다.
+                enterState(State::Stable);
+                break;
+            }
             samplesInState += numSamples;
             if (samplesInState > coastHoldSamples + coastFadeSamples)
             {

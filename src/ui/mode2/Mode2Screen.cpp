@@ -66,19 +66,23 @@ Mode2Screen::Mode2Screen(Mode2Controller& controllerIn)
     pitchShifterLabel.setText(utf8("피치 시프터 A/B"), juce::dontSendNotification);
     pitchShifterLabel.setJustificationType(juce::Justification::centredLeft);
     addAndMakeVisible(pitchShifterLabel);
-    pitchShifterBox.addItem("Rubber Band", 1);
-    pitchShifterBox.addItem(utf8("기존 SoundTouch"), 2);
-    pitchShifterBox.addItem(utf8("WORLD (실험)"), 3);
+    pitchShifterBox.addItem(utf8("Rubber Band R3 (고음질)"), 1);
+    pitchShifterBox.addItem(utf8("Rubber Band R2 (저지연)"), 2);
+    pitchShifterBox.addItem(utf8("기존 SoundTouch"), 3);
+    pitchShifterBox.addItem(utf8("WORLD (실험)"), 4);
     pitchShifterBox.setItemEnabled(
         1, PitchShifterEngine::isBackendAvailable(PitchShifterEngine::Backend::RubberBand));
     pitchShifterBox.setItemEnabled(
-        2, PitchShifterEngine::isBackendAvailable(PitchShifterEngine::Backend::SoundTouch));
+        2, PitchShifterEngine::isBackendAvailable(PitchShifterEngine::Backend::RubberBandLowLatency));
     pitchShifterBox.setItemEnabled(
-        3, PitchShifterEngine::isBackendAvailable(PitchShifterEngine::Backend::World));
+        3, PitchShifterEngine::isBackendAvailable(PitchShifterEngine::Backend::SoundTouch));
+    pitchShifterBox.setItemEnabled(
+        4, PitchShifterEngine::isBackendAvailable(PitchShifterEngine::Backend::World));
     const auto initialBackend = controller.getPitchShifterBackend();
     pitchShifterBox.setSelectedId(
         initialBackend == PitchShifterEngine::Backend::RubberBand ? 1
-        : initialBackend == PitchShifterEngine::Backend::SoundTouch ? 2 : 3,
+        : initialBackend == PitchShifterEngine::Backend::RubberBandLowLatency ? 2
+        : initialBackend == PitchShifterEngine::Backend::SoundTouch ? 3 : 4,
         juce::dontSendNotification);
     pitchShifterBox.onChange = [this]
     {
@@ -88,8 +92,10 @@ Mode2Screen::Mode2Screen(Mode2Controller& controllerIn)
             pitchShifterBox.getSelectedId() == 1
                 ? PitchShifterEngine::Backend::RubberBand
                 : pitchShifterBox.getSelectedId() == 2
-                    ? PitchShifterEngine::Backend::SoundTouch
-                    : PitchShifterEngine::Backend::World;
+                    ? PitchShifterEngine::Backend::RubberBandLowLatency
+                    : pitchShifterBox.getSelectedId() == 3
+                        ? PitchShifterEngine::Backend::SoundTouch
+                        : PitchShifterEngine::Backend::World;
         onPitchShifterBackendChanged(backend);
     };
     addAndMakeVisible(pitchShifterBox);

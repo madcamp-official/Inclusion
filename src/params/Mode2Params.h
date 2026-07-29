@@ -33,10 +33,10 @@ namespace mode2::params
     // 여전히 이 범위를 넘어 재조준 경로로 빠지므로 걸러진다.
     constexpr float stableToleranceSemitones = 3.0f;
 
-    // STABLE에서 검출 피치가 허용 오차를 벗어난 상태가 이만큼 연속되면 목표를 다시 잡는다.
-    // 온셋 없이 음이 바뀌는 경우(레가토, 부드러운 코드 전환, 울리는 중 운지 변경)를 잡기 위한
-    // 경로다. 1블록만 보고 재조준하면 순간적인 검출 튐에도 목표가 흔들리므로 여러 블록을 본다.
-    constexpr int stableReacquireBlocks = 2;
+    // STABLE에서 허용 오차 밖의 "같은 새 음"이 이 시간만큼 유지될 때만 목표를 다시 잡는다.
+    // 블록 수가 아니라 실제 시간으로 정해 버퍼 크기가 달라져도 동작을 일정하게 유지한다.
+    // 35ms면 줄을 스치며 생기는 짧은 배음·프렛 잡음은 버리면서 실제 운지 변경은 빠르게 따른다.
+    constexpr float stableReacquireSeconds = 0.035f;
     // 확정된 음표의 중앙에서 이 거리 안이면 같은 음표로 유지한다. 0.5보다 크게 둬서
     // 프렛 잡음·벤딩이 반음 경계를 잠깐 넘는 것만으로 목표가 왕복하지 않게 한다.
     constexpr float guitarNoteHysteresisSemitones = 0.65f;
