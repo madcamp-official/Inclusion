@@ -3,6 +3,7 @@
 #include "BinaryData.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 
 // 입력 채널 RMS 진단 로그. 채널 배선이나 기타 유입을 쫓을 때만 켠다(-DMODE2_DIAGNOSTIC_LOG=1).
@@ -935,6 +936,20 @@ void MainComponent::processMode2Block(const juce::AudioSourceChannelInfo& buffer
     }
 
 
+#if MODE2_DIAGNOSTIC_LOG
+    // 처리하면 채널 0-1이 출력으로 덮이므로, 입력 RMS는 반드시 여기서 떠 둔다.
+    std::array<double, 16> inputRms {};
+    const int loggedChannels = juce::jmin(16, buffer.getNumChannels());
+    for (int ch = 0; ch < loggedChannels; ++ch)
+    {
+        const float* read = buffer.getReadPointer(ch, startSample);
+        double ss = 0.0;
+        for (int i = 0; i < numSamples; ++i)
+            ss += static_cast<double>(read[i]) * read[i];
+        inputRms[static_cast<size_t>(ch)] = std::sqrt(ss / numSamples);
+    }
+#endif
+
     float* outL = buffer.getWritePointer(0, startSample);
     float* outR = buffer.getWritePointer(1, startSample);
 
@@ -942,28 +957,23 @@ void MainComponent::processMode2Block(const juce::AudioSourceChannelInfo& buffer
 
 #if MODE2_DIAGNOSTIC_LOG
     {
-        // 무음의 원인을 입력 / 처리 / 출력 중 하나로 좁히기 위한 로그.
-        // 입력은 반드시 스크래치에서 읽는다. 버퍼의 채널 0-1은 이 시점에 이미
-        // 출력으로 덮여 있어서, 거기서 읽으면 입력이 아니라 출력을 보게 된다.
         static int chLogCount = 0;
         if (++chLogCount % 24 == 0)
         {
-            const auto rms = [numSamples](const float* p)
+            double outSs = 0.0;
+            for (int i = 0; i < numSamples; ++i)
+                outSs += static_cast<double>(outL[i]) * outL[i];
+
+            juce::String line = "[CH] ";
+            for (int ch = 0; ch < loggedChannels; ++ch)
             {
-                double ss = 0.0;
-                for (int i = 0; i < numSamples; ++i)
-                    ss += static_cast<double>(p[i]) * p[i];
-                return std::sqrt(ss / numSamples);
-            };
-            juce::String line = "[CH] gtr(ch" + juce::String(guitarChannel) + ")="
-                                + juce::String(rms(guitarInputScratch.data()), 5)
-                                + "  voc(ch" + juce::String(vocalChannel) + ")="
-                                + juce::String(rms(vocalInputScratch.data()), 5)
-                                + "  out=" + juce::String(rms(outL), 5);
-            // 덮이지 않은 나머지 입력 채널도 함께 본다(배선이 어긋났는지 확인용).
-            for (int ch = 2; ch < buffer.getNumChannels(); ++ch)
-                line += "  raw" + juce::String(ch) + "="
-                        + juce::String(rms(buffer.getReadPointer(ch, startSample)), 5);
+                line += "in" + juce::String(ch) + "="
+                        + juce::String(inputRms[static_cast<size_t>(ch)], 5);
+                if (ch == guitarChannel) line += "(GTR)";
+                if (ch == vocalChannel)  line += "(VOC)";
+                line += "  ";
+            }
+            line += "out=" + juce::String(std::sqrt(outSs / numSamples), 5);
             juce::Logger::writeToLog(line);
         }
     }

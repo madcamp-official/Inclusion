@@ -477,3 +477,34 @@ add_test(
     NAME Mode2Tests
     COMMAND Mode2Tests
 )
+
+# --- 기타 목표 음정 프로브 --------------------------------------------------
+# 같은 WAV에 대해 앱이 실제로 보는 목표 음정을 찍어, 다른 분석 결과와 대조한다.
+juce_add_console_app(GuitarTargetProbe
+    PRODUCT_NAME "GuitarTargetProbe"
+)
+
+target_sources(GuitarTargetProbe PRIVATE
+    tools/guitar_target_probe/Main.cpp
+    src/core/dsp/OnsetDetector.cpp
+    src/core/dsp/PitchDetector.cpp
+    src/core/dsp/PitchStabilizer.cpp
+    src/mode2_guitar_vocoder/GuitarTargetTracker.cpp
+)
+
+target_include_directories(GuitarTargetProbe PRIVATE src)
+
+target_compile_definitions(GuitarTargetProbe PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+)
+
+target_link_libraries(GuitarTargetProbe
+    PRIVATE
+        juce::juce_audio_formats
+    PUBLIC
+        juce::juce_recommended_config_flags
+        juce::juce_recommended_warning_flags
+)
+
+configure_pitch_shifter(GuitarTargetProbe)
