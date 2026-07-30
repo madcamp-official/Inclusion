@@ -934,32 +934,40 @@ void MainComponent::processMode2Block(const juce::AudioSourceChannelInfo& buffer
         std::copy(roomRead, roomRead + numSamples, roomInputScratch.begin());
     }
 
-#if MODE2_DIAGNOSTIC_LOG
-    {
-        // 통합기기의 채널 순서가 바뀌었는지, 아니면 마이크가 기타를 줍는지 구분하기 위해
-        // 전체 입력 채널의 RMS를 찍는다.
-        static int chLogCount = 0;
-        if (++chLogCount % 24 == 0)
-        {
-            juce::String line = "[CH] ";
-            for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
-            {
-                const float* read = buffer.getReadPointer(ch, startSample);
-                double ss = 0.0;
-                for (int i = 0; i < numSamples; ++i)
-                    ss += static_cast<double>(read[i]) * read[i];
-                line += "ch" + juce::String(ch) + "=" + juce::String(std::sqrt(ss / numSamples), 5) + "  ";
-            }
-            line += "(기타=ch" + juce::String(guitarChannel) + " 목소리=ch" + juce::String(vocalChannel) + ")";
-            juce::Logger::writeToLog(line);
-        }
-    }
-#endif
 
     float* outL = buffer.getWritePointer(0, startSample);
     float* outR = buffer.getWritePointer(1, startSample);
 
     mode2Controller.processBlock(guitarInputScratch.data(), vocalInputScratch.data(), outL, outR, numSamples);
+
+#if MODE2_DIAGNOSTIC_LOG
+    {
+        // 무음의 원인을 입력 / 처리 / 출력 중 하나로 좁히기 위한 로그.
+        // 입력은 반드시 스크래치에서 읽는다. 버퍼의 채널 0-1은 이 시점에 이미
+        // 출력으로 덮여 있어서, 거기서 읽으면 입력이 아니라 출력을 보게 된다.
+        static int chLogCount = 0;
+        if (++chLogCount % 24 == 0)
+        {
+            const auto rms = [numSamples](const float* p)
+            {
+                double ss = 0.0;
+                for (int i = 0; i < numSamples; ++i)
+                    ss += static_cast<double>(p[i]) * p[i];
+                return std::sqrt(ss / numSamples);
+            };
+            juce::String line = "[CH] gtr(ch" + juce::String(guitarChannel) + ")="
+                                + juce::String(rms(guitarInputScratch.data()), 5)
+                                + "  voc(ch" + juce::String(vocalChannel) + ")="
+                                + juce::String(rms(vocalInputScratch.data()), 5)
+                                + "  out=" + juce::String(rms(outL), 5);
+            // 덮이지 않은 나머지 입력 채널도 함께 본다(배선이 어긋났는지 확인용).
+            for (int ch = 2; ch < buffer.getNumChannels(); ++ch)
+                line += "  raw" + juce::String(ch) + "="
+                        + juce::String(rms(buffer.getReadPointer(ch, startSample)), 5);
+            juce::Logger::writeToLog(line);
+        }
+    }
+#endif
 
     {
         // 진단 녹음: 기타 입력 / 목소리 입력 / 최종 출력을 한 파일에 남긴다.

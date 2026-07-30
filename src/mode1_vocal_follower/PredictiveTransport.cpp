@@ -48,7 +48,6 @@ void PredictiveTransport::reset() noexcept
     rejectedObservations = 0;
     nextPhraseIndex = 0;
     state = BeatClockState::disarmed;
-    recoveringSinceSample = -1;
     introAlignmentLocked = false;
     externalChordMismatchHold = false;
     reactiveIntroHypothesisUsed = false;
@@ -520,10 +519,7 @@ void PredictiveTransport::observe(
         ++rejectedObservations;
         confidence = std::max(0.0, confidence - 0.05);
         if (state == BeatClockState::locked)
-        {
             state = BeatClockState::recovering;
-            recoveringSinceSample = sample;
-        }
         return;
     }
 
@@ -535,8 +531,6 @@ void PredictiveTransport::observe(
     {
         ++rejectedObservations;
         confidence = std::max(0.0, confidence - 0.08);
-        if (state != BeatClockState::recovering)
-            recoveringSinceSample = sample;
         state = BeatClockState::recovering;
         return;
     }
@@ -593,24 +587,6 @@ void PredictiveTransport::updateState(
     {
         state = BeatClockState::coasting;
         confidence = std::max(0.0, confidence - 0.02);
-    }
-    else if (state == BeatClockState::recovering
-        && recoveringSinceSample >= 0
-        && static_cast<double>(blockEndSample - recoveringSinceSample)
-                / sampleRate
-            >= beatSeconds * recoveringFallbackBeats)
-    {
-        // recovering을 빠져나가는 유일한 길은 observe()가 관측을 "수용"하는 것인데,
-        // 연주 템포가 accepted band(candidateRate 0.72~1.35)를 벗어나 있으면 이후
-        // 관측이 계속 거부되어 영영 못 빠져나온다. 그동안 schedulePhrases()는
-        // recovering을 받지 않으므로, 연주자는 계속 치는데 보컬만 끝까지 죽는다.
-        // (실측: 기타는 26초까지 연주했는데 보컬은 22.5초에 멈춤. 그 사이 온셋과
-        //  score_event_changed는 정상적으로 계속 올라오고 있었다.)
-        // 악보 커서 자체는 계속 전진하므로, 두 박 뒤에는 coasting으로 되돌려
-        // 커서 기준으로라도 재생을 잇는다. 관측이 다시 수용되면 observe()가
-        // locked로 올려준다.
-        state = BeatClockState::coasting;
-        recoveringSinceSample = -1;
     }
 }
 
