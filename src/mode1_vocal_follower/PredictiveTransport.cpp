@@ -579,10 +579,25 @@ void PredictiveTransport::schedulePhrases(
         return;
 
     const auto& phrases = song->getPhrases();
+    // VARIANT_J: mora-granularity phrases can be under 200ms wide -- now
+    // comparable to, or smaller than, the follower's own onset-timing
+    // jitter (documented ~60-100ms swings from PredictiveTransport phase
+    // correction work). The old 50ms staleness rule silently dropped any
+    // phrase that fell behind scoreSeconds by more than that, which was
+    // fine when phrases were 1-2s apart, but now routinely eats several
+    // consecutive short phrases in a single jitter swing -- with no trace
+    // of it happening (this is why it took direct phrase-list diffing to
+    // even notice). Only truly abandon a phrase once it is more than
+    // severelyStaleSeconds behind (a real pause/skip, not ordinary
+    // jitter); anything closer still gets played, just as soon as
+    // possible instead of on time.
+    constexpr double severelyStaleSeconds = 0.6;
+    const double severelyStaleScoreSeconds =
+        severelyStaleSeconds / performanceSecondsPerScoreSecond;
     while (nextPhraseIndex < static_cast<int>(phrases.size())
         && phrases[static_cast<std::size_t>(
             nextPhraseIndex)].sourceStartSeconds
-            < scoreSeconds - 0.050)
+            < scoreSeconds - severelyStaleScoreSeconds)
     {
         ++nextPhraseIndex;
     }
@@ -606,15 +621,18 @@ void PredictiveTransport::schedulePhrases(
             }
         }
         const double scoreLead = targetScore - scoreSeconds;
-        const double performanceLead =
+        double performanceLead =
             scoreLead * performanceSecondsPerScoreSecond;
         if (performanceLead > lookaheadSeconds)
             break;
-        if (performanceLead < -0.050)
+        if (performanceLead < -severelyStaleSeconds)
         {
             ++nextPhraseIndex;
             continue;
         }
+        // Rescue: still late, but within tolerance -- fire it now rather
+        // than losing it. Never schedule a target in the past.
+        performanceLead = std::max(performanceLead, 0.0);
 
         const auto targetSample = decisionSample
             + static_cast<std::int64_t>(std::llround(
