@@ -88,6 +88,50 @@ public:
     {
         return introAlignmentOffsetSeconds;
     }
+    // Negative means "no override": IntroChromaAligner uses its normal
+    // best-scoring hypothesis untouched. A repetitive intro (e.g. a 2-bar
+    // chord vamp) can make several hypotheses with very different tempo
+    // scales score almost identically, since harmonic content alone can't
+    // tell which repetition of the pattern is being heard -- a song whose
+    // intro-lock is known (by measurement) to land on the wrong one can set
+    // this to bias the near-tied-hypothesis tie-break toward its real
+    // measured tempo instead.
+    [[nodiscard]] double getIntroAlignmentPreferredScale() const noexcept
+    {
+        return introAlignmentPreferredScale;
+    }
+    // The hypothesis bank IntroChromaAligner searches spans
+    // [center - halfRange, center + halfRange]. Defaults reproduce the
+    // original hardcoded 0.92-1.06 range exactly, so a song without a
+    // measured tempo is untouched. A song whose intro is known (by
+    // measurement) to repeat too regularly for chroma alone to pick the
+    // right repetition can narrow this so a wrong-repetition candidate
+    // is never even in the search space, rather than hoping a tie-break
+    // finds the right one among candidates that happened to score close.
+    [[nodiscard]] double getIntroAlignmentScaleCenter() const noexcept
+    {
+        return introAlignmentScaleCenter;
+    }
+    [[nodiscard]] double getIntroAlignmentScaleHalfRange() const noexcept
+    {
+        return introAlignmentScaleHalfRange;
+    }
+    // Multiplies the rendered vocal level in PhrasePlayer. Defaults to 1.0
+    // (no change) so a package without this field sounds exactly as before.
+    [[nodiscard]] double getVocalOutputGain() const noexcept
+    {
+        return vocalOutputGain;
+    }
+    // Pure output-side delay applied to the rendered vocal audio, after all
+    // score tracking. Unlike intro_alignment_offset_sec (which feeds back
+    // into the tracking math and can shift which onset-match candidate
+    // wins downstream), this only shifts samples in time -- a linear,
+    // predictable "push everything N seconds later" knob. Defaults to 0.0
+    // (no change).
+    [[nodiscard]] double getVocalOutputDelaySeconds() const noexcept
+    {
+        return vocalOutputDelaySeconds;
+    }
     [[nodiscard]] const juce::String& getRangeWarning() const noexcept
     {
         return rangeWarning;
@@ -128,6 +172,11 @@ private:
     // was tuned against Bansanka; other songs override it via the
     // "intro_alignment_offset_sec" package field.
     double introAlignmentOffsetSeconds = 0.540;
+    double introAlignmentPreferredScale = -1.0;
+    double introAlignmentScaleCenter = 0.99;
+    double introAlignmentScaleHalfRange = 0.07;
+    double vocalOutputGain = 1.0;
+    double vocalOutputDelaySeconds = 0.0;
     juce::String rangeWarning;
     int defaultExpressionStrength = 25;
     std::vector<int> expressionStrengths { 25 };

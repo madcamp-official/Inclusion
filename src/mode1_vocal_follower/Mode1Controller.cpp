@@ -27,6 +27,17 @@ void Mode1Controller::prepare(double sampleRate, int maximumBlockSize)
     introChromaAligner.prepare(sampleRate);
     continuousChromaExtractor.prepare(sampleRate);
     chordMismatchGate.reset();
+
+    // 4 seconds is comfortably past any offset this knob would realistically
+    // need; resized again (and cleared) whenever a song sets its own delay.
+    const int delayCapacitySamples =
+        static_cast<int>(std::llround(controllerSampleRate * 4.0));
+    vocalDelayLineLeft.assign(
+        static_cast<size_t>(std::max(1, delayCapacitySamples)), 0.0f);
+    vocalDelayLineRight.assign(
+        static_cast<size_t>(std::max(1, delayCapacitySamples)), 0.0f);
+    vocalDelayWriteIndex = 0;
+    vocalDelaySamples = 0;
 }
 
 void Mode1Controller::setInputLatencySeconds(double seconds) noexcept
@@ -44,6 +55,14 @@ bool Mode1Controller::loadSongPackage(
         return false;
 
     songPackage = std::move(candidate);
+    vocalDelaySamples = std::clamp(
+        static_cast<int>(std::llround(
+            songPackage.getVocalOutputDelaySeconds() * controllerSampleRate)),
+        0,
+        static_cast<int>(vocalDelayLineLeft.size()) - 1);
+    std::fill(vocalDelayLineLeft.begin(), vocalDelayLineLeft.end(), 0.0f);
+    std::fill(vocalDelayLineRight.begin(), vocalDelayLineRight.end(), 0.0f);
+    vocalDelayWriteIndex = 0;
     const int defaultExpression =
         songPackage.getDefaultExpressionStrength();
     if (!phrasePlayer.loadKeyAnchor(
@@ -660,6 +679,34 @@ void Mode1Controller::processSubBlock(
             3,
             getResidualKeyShift())));
     phrasePlayer.processBlock(outputLeft, outputRight, numSamples);
+    // Baseline has no intro-chroma lock to compensate for (it reacts
+    // directly to detected onsets from the first note), so this delay --
+    // tuned specifically for Active V2's intro-lock bias -- only applies
+    // there; Baseline stays untouched and typically lands closer to on-time
+    // on its own.
+    if (followerMode.load(std::memory_order_relaxed) == FollowerMode::activeV2
+        && vocalDelaySamples > 0
+        && !vocalDelayLineLeft.empty())
+    {
+        const int bufferSize = static_cast<int>(vocalDelayLineLeft.size());
+        for (int sample = 0; sample < numSamples; ++sample)
+        {
+            const int readIndex =
+                (vocalDelayWriteIndex - vocalDelaySamples + bufferSize)
+                % bufferSize;
+            const float delayedLeft =
+                vocalDelayLineLeft[static_cast<size_t>(readIndex)];
+            const float delayedRight =
+                vocalDelayLineRight[static_cast<size_t>(readIndex)];
+            vocalDelayLineLeft[static_cast<size_t>(vocalDelayWriteIndex)] =
+                outputLeft[sample];
+            vocalDelayLineRight[static_cast<size_t>(vocalDelayWriteIndex)] =
+                outputRight[sample];
+            outputLeft[sample] = delayedLeft;
+            outputRight[sample] = delayedRight;
+            vocalDelayWriteIndex = (vocalDelayWriteIndex + 1) % bufferSize;
+        }
+    }
     if (realtimeTraceEnabled.load(std::memory_order_relaxed)
         && phrasePlayer.getFirstOutputSampleOffset() >= 0)
     {

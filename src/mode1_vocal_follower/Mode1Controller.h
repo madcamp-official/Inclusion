@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <vector>
 
 namespace mode1
 {
@@ -299,6 +300,11 @@ private:
     std::int64_t processedSamples = 0;
     std::int64_t inputLatencySamples = 0;
     std::int64_t outputLatencySamplesV2 = 0;
+    // Pure output-side vocal delay (see SongPackage::getVocalOutputDelaySeconds).
+    std::vector<float> vocalDelayLineLeft;
+    std::vector<float> vocalDelayLineRight;
+    int vocalDelayWriteIndex = 0;
+    int vocalDelaySamples = 0;
     int tracedChordEventIndex = -1;
     int beatClockObservedScoreEventIndex = -1;
     BeatClockState tracedBeatClockState = BeatClockState::disarmed;

@@ -335,8 +335,13 @@ bool PredictiveTransport::observeHarmonicOnset(
         const double candidateRate =
             (onsetSample - lastTrustedOnsetSample) / sampleRate
             / (trustedScore - lastTrustedScoreSeconds);
-        if (candidateRate >= introAlignmentRate - 0.06
-            && candidateRate <= introAlignmentRate + 0.06)
+        // A live take's sustained tempo can end up genuinely further from
+        // the one-time intro-lock guess than +/-0.06 as the performance
+        // goes on (a performer speeding up or slowing down over a couple
+        // of minutes) -- reject only true outliers, not real tempo that
+        // has moved on from the opening bars.
+        if (candidateRate >= introAlignmentRate - 0.12
+            && candidateRate <= introAlignmentRate + 0.12)
         {
             recentRates[static_cast<size_t>(recentRateWriteIndex)] =
                 candidateRate;
@@ -354,20 +359,32 @@ bool PredictiveTransport::observeHarmonicOnset(
                     sorted.begin() + recentRateCount);
                 const double median =
                     sorted[static_cast<size_t>(recentRateCount / 2)];
+                // Pre-calibration, the tempo estimate has nothing else to
+                // anchor to yet, so it should close in on a genuinely
+                // slower/faster live tempo faster than the post-calibration
+                // gain -- 0.10 could take dozens of trusted observations
+                // (tens of seconds) to reach a performance running ~8% off
+                // the song's reference tempo.
                 const double tempoGain =
-                    calibrationApplied ? 0.02 : 0.10;
+                    calibrationApplied ? 0.02 : 0.16;
                 performanceSecondsPerScoreSecond +=
                     tempoGain * (median
                         - performanceSecondsPerScoreSecond);
                 if (calibrationApplied)
                 {
-                    performanceSecondsPerScoreSecond +=
-                        0.01 * (calibratedReferenceRate
-                            - performanceSecondsPerScoreSecond);
+                    // The pull back toward calibratedReferenceRate (a
+                    // one-time snapshot from the first 5 trusted onsets)
+                    // and the tight +/-0.02 clamp around it together keep
+                    // the estimate pinned near the opening bars' tempo for
+                    // the rest of the take. A real performance can drift
+                    // further than that over a couple of minutes (sped up
+                    // or slowed down), so let the ongoing median of
+                    // recent trusted onsets -- not just the earliest five
+                    // -- pull the estimate along with it.
                     performanceSecondsPerScoreSecond = std::clamp(
                         performanceSecondsPerScoreSecond,
-                        calibratedReferenceRate - 0.02,
-                        calibratedReferenceRate + 0.02);
+                        calibratedReferenceRate - 0.08,
+                        calibratedReferenceRate + 0.08);
                 }
                 else
                 {

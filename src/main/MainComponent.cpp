@@ -688,6 +688,18 @@ void MainComponent::getNextAudioBlock(
         outputLeft,
         outputRight,
         numSamples);
+    // Mix the guitar signal into the speaker output alongside the vocal, so
+    // monitoring through the speaker alone (no separate acoustic/hardware
+    // guitar path) still hears both together.
+    for (int sample = 0; sample < numSamples; ++sample)
+    {
+        outputLeft[sample] = juce::jlimit(
+            -1.0f, 1.0f,
+            outputLeft[sample] + guitarInputScratch[static_cast<size_t>(sample)]);
+        outputRight[sample] = juce::jlimit(
+            -1.0f, 1.0f,
+            outputRight[sample] + guitarInputScratch[static_cast<size_t>(sample)]);
+    }
     if (performanceOutputRecorder.isRecording())
         performanceOutputRecorder.processBlock(
             buffer, 0, startSample, numSamples);

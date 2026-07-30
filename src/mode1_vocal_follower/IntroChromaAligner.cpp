@@ -198,7 +198,11 @@ void IntroChromaAligner::initialiseHypotheses() noexcept
             onsetSeconds - scale * firstPlayedScoreSeconds + jitter;
     };
 
-    for (double scale = 0.92; scale <= 1.06001; scale += 0.004)
+    const double scaleCenter = song->getIntroAlignmentScaleCenter();
+    const double scaleHalfRange = song->getIntroAlignmentScaleHalfRange();
+    for (double scale = scaleCenter - scaleHalfRange;
+         scale <= scaleCenter + scaleHalfRange + 1.0e-5;
+         scale += 0.004)
     {
         for (double jitter = -0.12; jitter <= 0.12001; jitter += 0.024)
             addHypothesis(scale, jitter);
@@ -240,6 +244,39 @@ void IntroChromaAligner::updateResult(double performanceSeconds) noexcept
     }
     if (best < 0)
         return;
+
+    // Opt-in only (see SongPackage::getIntroAlignmentPreferredScale): a
+    // repetitive intro can leave several hypotheses with substantially
+    // different tempo scales scoring almost identically, since harmonic
+    // content alone can't tell which repetition of the pattern is being
+    // heard. Songs without a measured preferred scale get the original,
+    // untouched best-scoring hypothesis (this must stay a no-op for them).
+    const double preferredScale =
+        song != nullptr ? song->getIntroAlignmentPreferredScale() : -1.0;
+    if (preferredScale > 0.0)
+    {
+        constexpr double ambiguityEpsilon = 0.01;
+        int refinedBest = best;
+        double refinedBestDistance = std::abs(
+            hypotheses[static_cast<size_t>(best)].scale - preferredScale);
+        for (int index = 0; index < hypothesisCount; ++index)
+        {
+            const auto& hypothesis = hypotheses[static_cast<size_t>(index)];
+            if (hypothesis.frames <= 0)
+                continue;
+            const double mean = hypothesis.score / hypothesis.frames;
+            if (mean < bestMean - ambiguityEpsilon)
+                continue;
+            const double distance =
+                std::abs(hypothesis.scale - preferredScale);
+            if (distance < refinedBestDistance)
+            {
+                refinedBestDistance = distance;
+                refinedBest = index;
+            }
+        }
+        best = refinedBest;
+    }
 
     const auto& winner = hypotheses[static_cast<size_t>(best)];
     const double margin = second >= 0 ? bestMean - secondMean : bestMean;

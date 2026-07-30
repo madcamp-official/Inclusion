@@ -156,6 +156,7 @@ private:
     std::shared_ptr<PhraseBank> currentBank;
 
     double outputSampleRate = 48'000.0;
+    std::atomic<float> vocalOutputGain { 1.0f };
     int fadeInSamples = 1;
     int crossfadeSamples = 1;
     int endFadeSamples = 1;

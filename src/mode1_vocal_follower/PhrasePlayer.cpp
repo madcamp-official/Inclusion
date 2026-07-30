@@ -51,6 +51,7 @@ bool PhrasePlayer::loadKeyAnchor(
     juce::String& error,
     int expressionStrength)
 {
+    vocalOutputGain.store(static_cast<float>(package.getVocalOutputGain()));
     error.clear();
     auto loaded = std::make_shared<PhraseBank>();
     loaded->keyShift = keyShift;
@@ -471,7 +472,8 @@ void PhrasePlayer::renderVoice(
                 / std::max(1, endFadeSamples));
         const float value =
             voice.scratch[static_cast<size_t>(sample)]
-            * fadeIn * fadeOut * edgeFade * voice.accentGain;
+            * fadeIn * fadeOut * edgeFade * voice.accentGain
+            * vocalOutputGain.load(std::memory_order_relaxed);
         if (voice.phraseIndex == pendingFirstOutputPhraseIndex
             && std::abs(value) > 1.0e-7f)
         {

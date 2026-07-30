@@ -67,6 +67,20 @@ bool SongPackage::loadFromFile(const juce::File& packageFile, juce::String& erro
     if (rootObject->hasProperty("intro_alignment_offset_sec"))
         introAlignmentOffsetSeconds =
             numberProperty(rootObject, "intro_alignment_offset_sec");
+    if (rootObject->hasProperty("intro_alignment_preferred_scale"))
+        introAlignmentPreferredScale =
+            numberProperty(rootObject, "intro_alignment_preferred_scale");
+    if (rootObject->hasProperty("intro_alignment_scale_center"))
+        introAlignmentScaleCenter =
+            numberProperty(rootObject, "intro_alignment_scale_center");
+    if (rootObject->hasProperty("intro_alignment_scale_half_range"))
+        introAlignmentScaleHalfRange =
+            numberProperty(rootObject, "intro_alignment_scale_half_range");
+    if (rootObject->hasProperty("vocal_output_gain"))
+        vocalOutputGain = numberProperty(rootObject, "vocal_output_gain");
+    if (rootObject->hasProperty("vocal_output_delay_sec"))
+        vocalOutputDelaySeconds =
+            numberProperty(rootObject, "vocal_output_delay_sec");
     keyAnchors = { baseKeyShift };
     if (const auto* keyObject =
             rootObject->getProperty("key_style").getDynamicObject())
@@ -444,6 +458,11 @@ void SongPackage::clear()
     scoreBpm = 0.0;
     baseKeyShift = 0;
     introAlignmentOffsetSeconds = 0.540;
+    introAlignmentPreferredScale = -1.0;
+    introAlignmentScaleCenter = 0.99;
+    introAlignmentScaleHalfRange = 0.07;
+    vocalOutputGain = 1.0;
+    vocalOutputDelaySeconds = 0.0;
     rangeWarning.clear();
     defaultExpressionStrength = 25;
     expressionStrengths = { 25 };
