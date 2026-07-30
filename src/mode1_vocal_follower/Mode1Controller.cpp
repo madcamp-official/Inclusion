@@ -75,7 +75,73 @@ bool Mode1Controller::loadSongPackage(
         return false;
     }
 
+    {
+        std::array<bool, 12 * 9> allowedChords {};
+        for (const auto& event : songPackage.getChordTimeline())
+        {
+            const auto name = event.chord.trim().toUpperCase();
+            if (name.isEmpty() || name == "N" || name == "N.C." || name == "-")
+                continue;
+            int root = -1;
+            switch (name[0])
+            {
+                case 'C': root = 0; break;
+                case 'D': root = 2; break;
+                case 'E': root = 4; break;
+                case 'F': root = 5; break;
+                case 'G': root = 7; break;
+                case 'A': root = 9; break;
+                case 'B': root = 11; break;
+                default: break;
+            }
+            if (root < 0)
+                continue;
+            int nameLength = 1;
+            if (name.length() > 1 && name[1] == '#')
+            {
+                root = (root + 1) % 12;
+                nameLength = 2;
+            }
+            else if (name.length() > 1 && name[1] == 'B')
+            {
+                root = (root + 11) % 12;
+                nameLength = 2;
+            }
+            const auto suffix = name.substring(nameLength)
+                .upToFirstOccurrenceOf("/", false, false);
+            int qualityIndex = 0; // major
+            if (suffix.startsWith("DIM"))
+                qualityIndex = 2;
+            else if (suffix.startsWith("SUS2"))
+                qualityIndex = 3;
+            else if (suffix.startsWith("SUS4") || suffix.startsWith("SUS"))
+                qualityIndex = 4;
+            else if (suffix.startsWith("MAJ7"))
+                qualityIndex = 6;
+            else if (suffix.startsWith("M7") || suffix.startsWith("MIN7"))
+                qualityIndex = 7;
+            else if (suffix.startsWith("7"))
+                qualityIndex = 5;
+            else if (suffix.startsWith("M") && !suffix.startsWith("MAJ"))
+                qualityIndex = 1;
+            allowedChords[static_cast<size_t>(root) * 9
+                + static_cast<size_t>(qualityIndex)] = true;
+            // A guitarist's real voicing for a written chord commonly reads
+            // as the plain triad of the same root too (e.g. a 7th played
+            // without its seventh string ringing clearly) -- always allow
+            // the bare major/minor triad for every root that appears,
+            // whatever the written quality, so a legitimately-played chord
+            // is not rejected just because it wasn't voiced exactly as
+            // written.
+            allowedChords[static_cast<size_t>(root) * 9 + 0] = true;
+            allowedChords[static_cast<size_t>(root) * 9 + 1] = true;
+        }
+        chordTracker.setAllowedChords(allowedChords);
+    }
+
     scheduler.setSong(&songPackage);
+    scheduler.setDisableBoundaryPrediction(
+        songPackage.getDisableBoundaryPrediction());
     beatClock.prepare(controllerSampleRate, songPackage.getScoreBpm());
     predictiveScheduler.setSong(&songPackage);
     predictiveTransport.prepare(

@@ -174,8 +174,14 @@ ChordDetection GuitarChordTracker::analyse() noexcept
 
     for (int root = 0; root < 12; ++root)
     {
-        for (const auto& candidate : templates)
+        for (size_t templateIndex = 0; templateIndex < templates.size();
+             ++templateIndex)
         {
+            const auto& candidate = templates[templateIndex];
+            if (anyAllowedChordSet
+                && !allowedChords[static_cast<size_t>(root) * 9
+                    + templateIndex])
+                continue;
             float dot = 0.0f;
             float templateNormSquared = 0.0f;
             float weakestTone = 1.0f;

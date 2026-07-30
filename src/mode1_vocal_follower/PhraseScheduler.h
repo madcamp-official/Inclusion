@@ -33,6 +33,17 @@ public:
     }
     void reset() noexcept;
 
+    // When true, chooseChordEventForOnset() skips the tab_tracking
+    // multi-candidate lookahead entirely and falls back to the same
+    // conservative, purely-reactive matching a song without tab_tracking
+    // already uses (match the immediate next expected event only, minimal
+    // early tolerance). Off by default -- a song that never calls this
+    // keeps its exact current behaviour.
+    void setDisableBoundaryPrediction(bool disable) noexcept
+    {
+        disableBoundaryPrediction = disable;
+    }
+
     // Returns the phrase index to start, or -1 when no phrase starts.
     //
     // activeVocalLeadEnabled asks every phrase target to move
@@ -137,6 +148,7 @@ private:
         int phraseIndex) const noexcept;
 
     const SongPackage* song = nullptr;
+    bool disableBoundaryPrediction = false;
     double sampleRate = 48'000.0;
     double songTimeSeconds = 0.0;
     int nextPhraseIndex = 0;
