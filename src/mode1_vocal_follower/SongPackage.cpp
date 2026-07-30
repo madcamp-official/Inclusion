@@ -64,6 +64,9 @@ bool SongPackage::loadFromFile(const juce::File& packageFile, juce::String& erro
     scoreBpm = numberProperty(rootObject, "score_bpm");
     baseKeyShift = static_cast<int>(
         numberProperty(rootObject, "base_key_shift"));
+    if (rootObject->hasProperty("intro_alignment_offset_sec"))
+        introAlignmentOffsetSeconds =
+            numberProperty(rootObject, "intro_alignment_offset_sec");
     keyAnchors = { baseKeyShift };
     if (const auto* keyObject =
             rootObject->getProperty("key_style").getDynamicObject())
@@ -440,6 +443,7 @@ void SongPackage::clear()
     songName.clear();
     scoreBpm = 0.0;
     baseKeyShift = 0;
+    introAlignmentOffsetSeconds = 0.540;
     rangeWarning.clear();
     defaultExpressionStrength = 25;
     expressionStrengths = { 25 };

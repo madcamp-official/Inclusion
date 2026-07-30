@@ -80,7 +80,10 @@ void PredictiveTransport::applyIntroAlignment(
         return;
     const double performanceSeconds =
         static_cast<double>(sample) / sampleRate;
-    const double adjustedAlignedOffsetSeconds = alignedOffsetSeconds + 0.540;
+    const double introAlignmentOffsetSeconds =
+        song != nullptr ? song->getIntroAlignmentOffsetSeconds() : 0.540;
+    const double adjustedAlignedOffsetSeconds =
+        alignedOffsetSeconds + introAlignmentOffsetSeconds;
     const double reactiveRate = performanceSecondsPerScoreSecond;
     double reactiveScoreAtAlignment = scoreSeconds;
     if (currentSample < sample

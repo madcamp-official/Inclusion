@@ -84,6 +84,10 @@ public:
     [[nodiscard]] const juce::String& getSongName() const noexcept { return songName; }
     [[nodiscard]] double getScoreBpm() const noexcept { return scoreBpm; }
     [[nodiscard]] int getBaseKeyShift() const noexcept { return baseKeyShift; }
+    [[nodiscard]] double getIntroAlignmentOffsetSeconds() const noexcept
+    {
+        return introAlignmentOffsetSeconds;
+    }
     [[nodiscard]] const juce::String& getRangeWarning() const noexcept
     {
         return rangeWarning;
@@ -118,6 +122,12 @@ private:
     juce::String songName;
     double scoreBpm = 0.0;
     int baseKeyShift = 0;
+    // PredictiveTransport's IntroChromaAligner lock is empirically biased
+    // early by a song-dependent amount (its intro's own chord content and
+    // duration change how ambiguous the chroma match is). This constant
+    // was tuned against Bansanka; other songs override it via the
+    // "intro_alignment_offset_sec" package field.
+    double introAlignmentOffsetSeconds = 0.540;
     juce::String rangeWarning;
     int defaultExpressionStrength = 25;
     std::vector<int> expressionStrengths { 25 };
