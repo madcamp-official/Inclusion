@@ -27,6 +27,7 @@ void Mode1Controller::prepare(double sampleRate, int maximumBlockSize)
     introChromaAligner.prepare(sampleRate);
     continuousChromaExtractor.prepare(sampleRate);
     chordMismatchGate.reset();
+    activeV2ReactiveFallbackLatched.store(false);
 
     // 4 seconds is comfortably past any offset this knob would realistically
     // need; resized again (and cleared) whenever a song sets its own delay.
@@ -167,6 +168,7 @@ bool Mode1Controller::loadSongPackage(
     expressionStrength.store(defaultExpression);
     phrasePlayer.setExpressionStrength(defaultExpression);
     lastStartedPhrase.store(-1);
+    activeV2ReactiveFallbackLatched.store(false);
     pendingCommittedPhrase = -1;
     pendingCommitBlocks = 0;
     vocalRest.store(false);
@@ -189,6 +191,7 @@ void Mode1Controller::reset() noexcept
     vocalRest.store(false);
     guitarRms.store(0.0f);
     lastStartedPhrase.store(-1);
+    activeV2ReactiveFallbackLatched.store(false);
     pendingCommittedPhrase = -1;
     pendingCommitBlocks = 0;
     detectedChordRoot.store(-1);
@@ -618,8 +621,30 @@ void Mode1Controller::processSubBlock(
         followerMode.load(std::memory_order_relaxed)
             == FollowerMode::predictiveActive
         && !autoPlaying;
+    // Active v2 normally owns phrase playback, so the reactive scheduler is
+    // kept in shadow. If the predictive transport loses its phase after
+    // vocals have already started, however, recovering cannot schedule any
+    // more phrases. Keep following the performer's confirmed score boundaries
+    // through the reactive scheduler for the rest of this performance.
+    //
+    // This deliberately does not force the predictive cursor into coasting:
+    // that cursor is exactly the state we cannot trust while recovering.
+    const auto lastStartedPhraseIndex =
+        lastStartedPhrase.load(std::memory_order_relaxed);
+    if (activeV2Output
+        && lastStartedPhraseIndex >= 0
+        && predictiveSnapshot.state == BeatClockState::recovering)
+    {
+        activeV2ReactiveFallbackLatched.store(
+            true, std::memory_order_relaxed);
+    }
+    const bool activeV2ReactiveFallback =
+        activeV2Output
+        && activeV2ReactiveFallbackLatched.load(
+            std::memory_order_relaxed);
     const int phraseToStart =
-        activeV2Output || chordMismatchGate.isPaused()
+        (activeV2Output && !activeV2ReactiveFallback)
+            || chordMismatchGate.isPaused()
         ? -1
         : baselinePhraseToStart;
     if (realtimeTraceEnabled.load(std::memory_order_relaxed)
@@ -691,7 +716,7 @@ void Mode1Controller::processSubBlock(
                 predictiveSnapshot.state),
             static_cast<float>(predictedEvent.confidence)
         });
-        if (activeV2Output)
+        if (activeV2Output && !activeV2ReactiveFallback)
         {
             if (predictedEvent.type
                 == PredictiveTransportEventType::phraseScheduled)
@@ -723,7 +748,13 @@ void Mode1Controller::processSubBlock(
             0u
         });
     }
-    if (phraseToStart >= 0)
+    // A predicted reservation may have been accepted earlier in this same
+    // block. Never let the fallback replay that phrase (or an older one).
+    if (phraseToStart >= 0
+        && (
+            !activeV2ReactiveFallback
+            || phraseToStart
+                > lastStartedPhrase.load(std::memory_order_relaxed)))
     {
         if (realtimeTraceEnabled.load(std::memory_order_relaxed))
         {
@@ -951,6 +982,7 @@ void Mode1Controller::startAutomaticPlayback() noexcept
     tracedPredictiveTransportState = BeatClockState::disarmed;
     phrasePlayer.stop();
     lastStartedPhrase.store(-1);
+    activeV2ReactiveFallbackLatched.store(false);
     pendingCommittedPhrase = -1;
     pendingCommitBlocks = 0;
     lastOnset.store(false);
@@ -983,6 +1015,7 @@ void Mode1Controller::stopAutomaticPlayback() noexcept
     tracedPredictiveTransportState = BeatClockState::disarmed;
     phrasePlayer.stop();
     lastStartedPhrase.store(-1);
+    activeV2ReactiveFallbackLatched.store(false);
     pendingCommittedPhrase = -1;
     pendingCommitBlocks = 0;
     lastOnset.store(false);
@@ -1022,6 +1055,7 @@ void Mode1Controller::restartPerformance() noexcept
     manualTrigger.store(false);
     pendingVirtualChordRoot.store(-1);
     lastStartedPhrase.store(-1);
+    activeV2ReactiveFallbackLatched.store(false);
     pendingCommittedPhrase = -1;
     pendingCommitBlocks = 0;
     lastOnset.store(false);
@@ -1062,6 +1096,7 @@ void Mode1Controller::stopPerformance() noexcept
     manualTrigger.store(false);
     pendingVirtualChordRoot.store(-1);
     lastStartedPhrase.store(-1);
+    activeV2ReactiveFallbackLatched.store(false);
     pendingCommittedPhrase = -1;
     pendingCommitBlocks = 0;
     lastOnset.store(false);

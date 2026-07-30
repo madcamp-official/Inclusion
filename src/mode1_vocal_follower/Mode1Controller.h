@@ -310,6 +310,10 @@ private:
     BeatClockState tracedBeatClockState = BeatClockState::disarmed;
     BeatClockState tracedPredictiveTransportState =
         BeatClockState::disarmed;
+    // Once Active v2 loses phase during an already-running vocal, keep one
+    // scheduler in charge until the performance restarts. Switching ownership
+    // block-by-block makes adjacent lyric clips replace one another.
+    std::atomic<bool> activeV2ReactiveFallbackLatched { false };
     bool introAlignmentApplied = false;
     std::int64_t lastPhysicalOnsetForChordAnalysis = -1;
     std::atomic<bool> realtimeTraceEnabled { false };

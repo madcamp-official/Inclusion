@@ -9,7 +9,7 @@ public:
 
     const juce::String getApplicationName() override    { return JUCE_APPLICATION_NAME_STRING; }
     const juce::String getApplicationVersion() override { return JUCE_APPLICATION_VERSION_STRING; }
-    bool moreThanOneInstanceAllowed() override           { return true; }
+    bool moreThanOneInstanceAllowed() override           { return false; }
 
     void initialise(const juce::String&) override
     {
@@ -29,6 +29,15 @@ public:
     void systemRequestedQuit() override
     {
         quit();
+    }
+
+    void anotherInstanceStarted(const juce::String&) override
+    {
+        if (mainWindow != nullptr)
+        {
+            mainWindow->setVisible(true);
+            mainWindow->toFront(true);
+        }
     }
 
     class MainWindow : public juce::DocumentWindow

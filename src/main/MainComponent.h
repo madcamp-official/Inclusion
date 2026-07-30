@@ -152,17 +152,13 @@ private:
     juce::TextButton audioSettingsButton;
     juce::Label statusLabel;
 
-    // 채널 배선은 모드마다 다르다. 모드 1은 보통 오인페 하나만 쓰므로
-    // 기타=악기잭, 마이크=XLR로 같은 장치의 두 입력을 쓰고, 모드 2는 기타와
-    // 목소리를 서로 다른 하드웨어에서 받아야 해서 통합 기기의 세 번째 채널을
-    // 쓰는 식이다. 한때 둘을 공유하게 했더니 모드 1에서 고른 배선이 모드 2의
-    // 목소리 채널을 죽은 입력으로 덮어써서 보코더가 무음이 됐다. 따로 둔다.
-    std::atomic<int> guitarChannelIndex { 0 };   // 모드 2
-    std::atomic<int> vocalChannelIndex { 1 };    // 모드 2
+    // 물리 배선은 모드와 무관하게 하나다.
+    // Scarlett Input 1 = 마이크, Input 2 = 기타.
+    // 모드 1은 기타만 처리하고, 모드 2는 같은 기타와 마이크를 함께 처리한다.
+    std::atomic<int> guitarChannelIndex { 1 };
+    std::atomic<int> vocalChannelIndex { 0 };
     // 녹음에만 함께 담을 채널(-1 = 없음). 처리 경로에는 쓰지 않는다.
     std::atomic<int> roomChannelIndex { -1 };
-    std::atomic<int> mode1GuitarChannelIndex { 1 };
-    std::atomic<int> mode1MicChannelIndex { 0 };
 
     std::vector<float> guitarInputScratch;
     std::vector<float> vocalInputScratch;
