@@ -132,6 +132,13 @@ public:
     {
         return vocalOutputDelaySeconds;
     }
+    // See PhraseScheduler::setDisableBoundaryPrediction(). Defaults to
+    // false, so a song without this field keeps its current chord-cursor
+    // behaviour exactly.
+    [[nodiscard]] bool getDisableBoundaryPrediction() const noexcept
+    {
+        return disableBoundaryPrediction;
+    }
     [[nodiscard]] const juce::String& getRangeWarning() const noexcept
     {
         return rangeWarning;
@@ -177,6 +184,7 @@ private:
     double introAlignmentScaleHalfRange = 0.07;
     double vocalOutputGain = 1.0;
     double vocalOutputDelaySeconds = 0.0;
+    bool disableBoundaryPrediction = false;
     juce::String rangeWarning;
     int defaultExpressionStrength = 25;
     std::vector<int> expressionStrengths { 25 };

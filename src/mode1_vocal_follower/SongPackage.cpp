@@ -21,6 +21,13 @@ juce::String stringProperty(const juce::DynamicObject* object, const juce::Ident
         return {};
     return object->getProperty(name).toString();
 }
+
+bool boolProperty(const juce::DynamicObject* object, const juce::Identifier& name)
+{
+    if (object == nullptr || !object->hasProperty(name))
+        return false;
+    return static_cast<bool>(object->getProperty(name));
+}
 } // namespace
 
 bool SongPackage::loadFromFile(const juce::File& packageFile, juce::String& error)
@@ -81,6 +88,9 @@ bool SongPackage::loadFromFile(const juce::File& packageFile, juce::String& erro
     if (rootObject->hasProperty("vocal_output_delay_sec"))
         vocalOutputDelaySeconds =
             numberProperty(rootObject, "vocal_output_delay_sec");
+    if (rootObject->hasProperty("disable_boundary_prediction"))
+        disableBoundaryPrediction =
+            boolProperty(rootObject, "disable_boundary_prediction");
     keyAnchors = { baseKeyShift };
     if (const auto* keyObject =
             rootObject->getProperty("key_style").getDynamicObject())
@@ -464,6 +474,7 @@ void SongPackage::clear()
     introAlignmentScaleHalfRange = 0.07;
     vocalOutputGain = 1.0;
     vocalOutputDelaySeconds = 0.0;
+    disableBoundaryPrediction = false;
     rangeWarning.clear();
     defaultExpressionStrength = 25;
     expressionStrengths = { 25 };

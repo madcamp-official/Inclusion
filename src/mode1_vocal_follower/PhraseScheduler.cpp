@@ -427,7 +427,9 @@ int PhraseScheduler::chooseChordEventForOnset(
         - currentScoreTime;
     const double nextPrediction =
         nextScoreDelta / std::max(0.65, tempoScale);
-    if (song->hasTabTracking() && performanceOriginEventIndex >= 0)
+    if (song->hasTabTracking()
+        && performanceOriginEventIndex >= 0
+        && !disableBoundaryPrediction)
     {
         const double performedFromOrigin =
             performanceTimeSeconds - performanceOriginSeconds;
@@ -630,19 +632,38 @@ void PhraseScheduler::updateTempoEstimate(
         realPause);
 
     const auto& timeline = song->getChordTimeline();
-    if (song->hasTabTracking() && performanceOriginEventIndex >= 0)
+    if (song->hasTabTracking())
     {
-        const double scoreFromOrigin =
+        // Was: scoreFromOrigin/performanceFromOrigin measured against a
+        // single FIXED origin set once near the start of the take. Any
+        // matched index that lands even slightly ahead of the true
+        // position (chooseChordEventForOnset's own tempoScale-dependent
+        // search can do this) inflates that cumulative-average
+        // observation, which nudges tempoScale up, which biases the next
+        // match further ahead again -- a slow self-reinforcing drift
+        // (measured: tempo_scale crept 1.001 -> 1.014 over 70s on a real
+        // take, ~1.7s of accumulated early-ness by then). A rolling anchor
+        // (matches the non-tab_tracking path below) only ever compares
+        // against the immediately preceding matched point, so a single
+        // biased match can't compound across the rest of the take.
+        if (tempoAnchorEventIndex < 0)
+        {
+            tempoAnchorEventIndex = matchedEventIndex;
+            tempoAnchorPerformanceSeconds = boundaryPerformanceSeconds;
+            return;
+        }
+        if (matchedEventIndex <= tempoAnchorEventIndex)
+            return;
+        const double scoreDelta =
             timeline[static_cast<size_t>(matchedEventIndex)].startSeconds
             - timeline[static_cast<size_t>(
-                performanceOriginEventIndex)].startSeconds;
-        const double performanceFromOrigin =
-            boundaryPerformanceSeconds - performanceOriginSeconds;
-        if (scoreFromOrigin < scoreBeatSeconds() * 12.0
-            || performanceFromOrigin <= 0.10)
+                tempoAnchorEventIndex)].startSeconds;
+        const double elapsedSeconds =
+            boundaryPerformanceSeconds - tempoAnchorPerformanceSeconds;
+        if (scoreDelta < scoreBeatSeconds() * 12.0
+            || elapsedSeconds <= 0.10)
             return;
-        const double observation =
-            scoreFromOrigin / performanceFromOrigin;
+        const double observation = scoreDelta / elapsedSeconds;
         if (observation < 0.75 || observation > 1.30)
             return;
         tempoScale = juce::jlimit(
@@ -650,6 +671,8 @@ void PhraseScheduler::updateTempoEstimate(
             1.25,
             tempoScale + 0.06 * (observation - tempoScale));
         ++tempoObservationCount;
+        tempoAnchorEventIndex = matchedEventIndex;
+        tempoAnchorPerformanceSeconds = boundaryPerformanceSeconds;
         return;
     }
     if (tempoAnchorEventIndex < 0)
@@ -973,7 +996,8 @@ int PhraseScheduler::startDueGuitarPhrase() noexcept
             && nextBoundaryDistanceSeconds
                 <= 4.0 * scoreBeatSeconds();
         predictsNextBoundary =
-            predictionEnabledForBlock
+            !disableBoundaryPrediction
+            && predictionEnabledForBlock
             && hasReliableTimingSlope()
             && stablePredictionAnchorCount >= 2
             && nextChordEventIndex >= 0
