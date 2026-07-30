@@ -120,6 +120,13 @@ private:
     int rejectedObservations = 0;
     int nextPhraseIndex = 0;
     BeatClockState state = BeatClockState::disarmed;
+    // recovering으로 들어간 시점. schedulePhrases()가 recovering을 받아주지 않으므로,
+    // 여기서 너무 오래 머물면 연주 중인데도 보컬이 통째로 멈춘다. updateState()가
+    // 이 값으로 시간을 재서 coasting으로 되돌린다.
+    std::int64_t recoveringSinceSample = -1;
+    // 두 박. 한 박이면 정상적인 한 번의 관측 거부에도 되돌아가 버리고,
+    // 더 길면 실제 정지가 귀에 들릴 만큼 남는다.
+    static constexpr double recoveringFallbackBeats = 2.0;
     bool introAlignmentLocked = false;
     bool externalChordMismatchHold = false;
     bool reactiveIntroHypothesisUsed = false;
