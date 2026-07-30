@@ -90,12 +90,21 @@ public:
         }
         if (consecutiveMismatches < requiredConsecutiveMismatches)
             return ChordMismatchDecision::none;
-        if (observationTimeSeconds >= 0.0
-            && firstMismatchTimeSeconds >= 0.0
-            && observationTimeSeconds - firstMismatchTimeSeconds
-                < minimumMismatchDurationSeconds)
+
+        // The duration debounce only means something when the mismatch
+        // streak spans more than one observe() call: with the threshold at
+        // 1, this same call both starts the streak and satisfies it, so
+        // observationTimeSeconds - firstMismatchTimeSeconds is always
+        // exactly zero and the gate would silently swallow every mismatch.
+        if constexpr (requiredConsecutiveMismatches > 1)
         {
-            return ChordMismatchDecision::none;
+            if (observationTimeSeconds >= 0.0
+                && firstMismatchTimeSeconds >= 0.0
+                && observationTimeSeconds - firstMismatchTimeSeconds
+                    < minimumMismatchDurationSeconds)
+            {
+                return ChordMismatchDecision::none;
+            }
         }
 
         paused = true;
