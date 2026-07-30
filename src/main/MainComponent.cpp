@@ -367,7 +367,7 @@ MainComponent::MainComponent()
         guitarChannelSelector.addItem(L"기타: Input " + juce::String(channel + 1), channel + 1);
     guitarChannelSelector.onChange = [this]
     {
-        guitarChannelIndex.store(
+        mode1GuitarChannelIndex.store(
             std::max(0, guitarChannelSelector.getSelectedId() - 1));
         // 채널 매핑은 두 모드가 공유하므로 여기서 고른 값도 저장해 둔다.
         saveChannelMap();
@@ -558,7 +558,7 @@ MainComponent::MainComponent()
             channel + 1);
     microphoneChannelSelector.onChange = [this]
     {
-        vocalChannelIndex.store(
+        mode1MicChannelIndex.store(
             std::max(0, microphoneChannelSelector.getSelectedId() - 1));
         saveChannelMap();
     };
@@ -731,7 +731,7 @@ void MainComponent::getNextAudioBlock(
         const int micChannel = juce::jlimit(
             0,
             buffer.getNumChannels() - 1,
-            vocalChannelIndex.load());
+            mode1MicChannelIndex.load());
         const auto peak =
             buffer.getMagnitude(micChannel, startSample, numSamples);
         liveMicrophonePeak.store(
@@ -743,7 +743,7 @@ void MainComponent::getNextAudioBlock(
         const int micChannel = juce::jlimit(
             0,
             buffer.getNumChannels() - 1,
-            vocalChannelIndex.load());
+            mode1MicChannelIndex.load());
         inputLevelCalibrator.processBlock(
             buffer.getReadPointer(micChannel, startSample), numSamples);
     }
@@ -753,7 +753,7 @@ void MainComponent::getNextAudioBlock(
         const int micChannel = juce::jlimit(
             0,
             buffer.getNumChannels() - 1,
-            vocalChannelIndex.load());
+            mode1MicChannelIndex.load());
         const auto* micInput = buffer.getReadPointer(micChannel, startSample);
         guidedRecordingSession.processAudioBlock(micInput, numSamples);
 
@@ -766,7 +766,7 @@ void MainComponent::getNextAudioBlock(
 
     if (voiceRecorder.isRecording())
         voiceRecorder.processBlock(
-            buffer, vocalChannelIndex.load(), startSample, numSamples);
+            buffer, mode1MicChannelIndex.load(), startSample, numSamples);
 
     if (static_cast<int>(guitarInputScratch.size()) < numSamples)
     {
@@ -780,7 +780,7 @@ void MainComponent::getNextAudioBlock(
         ? juce::jlimit(
             0,
             buffer.getNumChannels() - 1,
-            guitarChannelIndex.load())
+            mode1GuitarChannelIndex.load())
         : 0;
     if (guitarTestRecorder.isRecording() && buffer.getNumChannels() > 0)
         guitarTestRecorder.processBlock(
@@ -1018,7 +1018,7 @@ void MainComponent::requestLatencyMeasurement()
         .withMessage(
             L"1. 스피커/헤드폰 볼륨을 낮추세요.\n"
             L"2. 오인페 출력 1을 현재 선택한 기타 입력 "
-            + juce::String(guitarChannelIndex.load() + 1)
+            + juce::String(mode1GuitarChannelIndex.load() + 1)
             + L"에 케이블로 연결하세요.\n"
             L"3. 직접 모니터링과 이펙트를 끄세요.\n\n"
             L"약 2초간 작은 테스트 신호를 5번 보냅니다.")
@@ -1697,7 +1697,7 @@ void MainComponent::startGuitarTestRecording()
         juce::dontSendNotification);
     mode1StatusLabel.setText(
         L"기타 입력과 보컬 출력 동시 녹음 중: Input "
-            + juce::String(guitarChannelIndex.load() + 1),
+            + juce::String(mode1GuitarChannelIndex.load() + 1),
         juce::dontSendNotification);
     refreshTransportControls();
     refreshGuitarTestControls();
@@ -2615,7 +2615,7 @@ void MainComponent::timerCallback()
         (
             guitarReplayActive.load()
                 ? juce::String(L"WAV 테스트 입력")
-                : L"Input " + juce::String(guitarChannelIndex.load() + 1))
+                : L"Input " + juce::String(mode1GuitarChannelIndex.load() + 1))
             + L" · " + juce::String(rawInputDb, 1) + L" dBFS · "
             + juce::String(mode1Controller.isGuitarActive()
                 ? L"기타 입력 감지"
@@ -3007,10 +3007,14 @@ void MainComponent::refreshChannelChoices()
     mode2Screen.setAvailableInputChannels(numInputs, guitar, vocal,
                                           room < numInputs ? room : -1);
 
-    // 모드 1의 채널 콤보박스도 같은 값을 가리키게 한다. 두 모드가 채널 매핑을
-    // 공유하므로, 한쪽에서 배선을 고치면 다른 쪽에도 반영되어야 한다.
-    guitarChannelSelector.setSelectedId(guitar + 1, juce::dontSendNotification);
-    microphoneChannelSelector.setSelectedId(vocal + 1, juce::dontSendNotification);
+    // 모드 1 콤보박스는 모드 1의 배선을 가리킨다. 모드 2 값을 여기에 밀어넣으면
+    // 두 모드가 서로의 채널을 덮어써서 한쪽이 죽은 입력을 잡게 된다.
+    guitarChannelSelector.setSelectedId(
+        juce::jlimit(0, numInputs - 1, mode1GuitarChannelIndex.load()) + 1,
+        juce::dontSendNotification);
+    microphoneChannelSelector.setSelectedId(
+        juce::jlimit(0, numInputs - 1, mode1MicChannelIndex.load()) + 1,
+        juce::dontSendNotification);
 }
 
 juce::File MainComponent::getAudioSettingsFile()
@@ -3032,7 +3036,9 @@ void MainComponent::saveAudioSettings()
 
 juce::File MainComponent::getChannelMapFile()
 {
-    return getAudioSettingsFile().getSiblingFile("InputChannelMap.xml");
+    // 파일 이름은 모드 2 시절 그대로 둔다. 사용자가 이미 맞춰 둔 배선을
+    // 이름만 바꿔 잃어버리게 할 이유가 없다.
+    return getAudioSettingsFile().getSiblingFile("Mode2ChannelMap.xml");
 }
 
 void MainComponent::saveChannelMap()
@@ -3041,6 +3047,9 @@ void MainComponent::saveChannelMap()
     xml.setAttribute("guitarChannel", guitarChannelIndex.load());
     xml.setAttribute("vocalChannel", vocalChannelIndex.load());
     xml.setAttribute("roomChannel", roomChannelIndex.load());
+    // 모드 1은 배선이 다르므로 같은 파일에 따로 적는다.
+    xml.setAttribute("mode1GuitarChannel", mode1GuitarChannelIndex.load());
+    xml.setAttribute("mode1MicChannel", mode1MicChannelIndex.load());
 
     const auto file = getChannelMapFile();
     file.getParentDirectory().createDirectory();
@@ -3049,10 +3058,7 @@ void MainComponent::saveChannelMap()
 
 void MainComponent::loadChannelMap()
 {
-    auto file = getChannelMapFile();
-    // 모드 2 전용이던 시절의 파일 이름도 그대로 읽어 준다.
-    if (! file.existsAsFile())
-        file = getAudioSettingsFile().getSiblingFile("Mode2ChannelMap.xml");
+    const auto file = getChannelMapFile();
     if (! file.existsAsFile())
         return;
 
@@ -3061,6 +3067,12 @@ void MainComponent::loadChannelMap()
         guitarChannelIndex.store(xml->getIntAttribute("guitarChannel", 0));
         vocalChannelIndex.store(xml->getIntAttribute("vocalChannel", 1));
         roomChannelIndex.store(xml->getIntAttribute("roomChannel", -1));
+        // 모드 1 값이 아직 없는 파일이면 그쪽 기본값(Scarlett Solo 기준
+        // 기타=INPUT 2, 마이크=INPUT 1)을 그대로 쓴다.
+        mode1GuitarChannelIndex.store(
+            xml->getIntAttribute("mode1GuitarChannel", 1));
+        mode1MicChannelIndex.store(
+            xml->getIntAttribute("mode1MicChannel", 0));
     }
 }
 

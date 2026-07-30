@@ -152,11 +152,17 @@ private:
     juce::TextButton audioSettingsButton;
     juce::Label statusLabel;
 
-    // 두 모드가 같은 채널 매핑을 쓴다(모드 1의 "마이크" = 모드 2의 "목소리").
-    std::atomic<int> guitarChannelIndex { 0 };
-    std::atomic<int> vocalChannelIndex { 1 };
+    // 채널 배선은 모드마다 다르다. 모드 1은 보통 오인페 하나만 쓰므로
+    // 기타=악기잭, 마이크=XLR로 같은 장치의 두 입력을 쓰고, 모드 2는 기타와
+    // 목소리를 서로 다른 하드웨어에서 받아야 해서 통합 기기의 세 번째 채널을
+    // 쓰는 식이다. 한때 둘을 공유하게 했더니 모드 1에서 고른 배선이 모드 2의
+    // 목소리 채널을 죽은 입력으로 덮어써서 보코더가 무음이 됐다. 따로 둔다.
+    std::atomic<int> guitarChannelIndex { 0 };   // 모드 2
+    std::atomic<int> vocalChannelIndex { 1 };    // 모드 2
     // 녹음에만 함께 담을 채널(-1 = 없음). 처리 경로에는 쓰지 않는다.
     std::atomic<int> roomChannelIndex { -1 };
+    std::atomic<int> mode1GuitarChannelIndex { 1 };
+    std::atomic<int> mode1MicChannelIndex { 0 };
 
     std::vector<float> guitarInputScratch;
     std::vector<float> vocalInputScratch;
