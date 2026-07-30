@@ -205,6 +205,11 @@ def main() -> int:
     parser.add_argument("--reference-wav", type=Path)
     parser.add_argument("--seed", type=int, default=1031)
     parser.add_argument("--sample-rate", type=int, default=48_000)
+    parser.add_argument(
+        "--no-subdivisions",
+        action="store_true",
+        help="Render exactly one main strum per score event.",
+    )
     args = parser.parse_args()
 
     package = json.loads(args.song_package.read_text(encoding="utf-8"))
@@ -218,7 +223,7 @@ def main() -> int:
     # Integrate a slow, natural tempo curve. The performer averages close to
     # score tempo but breathes by a few percent across musical sections.
     performance_times: list[float] = []
-    previous_score = 0.0
+    previous_score = float(playable[0]["start_sec"])
     previous_real = 2.65
     timing_wander = 0.0
     for event_index, event in enumerate(playable):
@@ -254,7 +259,7 @@ def main() -> int:
         )
         main_strums += 1
 
-        if index + 1 >= len(playable):
+        if args.no_subdivisions or index + 1 >= len(playable):
             continue
         interval = performance_times[index + 1] - event_time
         beat = 60.0 / float(package.get("score_bpm", 103.1))

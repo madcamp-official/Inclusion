@@ -47,6 +47,13 @@ struct Phrase
     int anchorChordEventIndex = -1;
     double chordRelativeStartSeconds = 0.0;
     double contentOffsetSeconds = 0.0;
+    // Offset from the configured playback/content start to the first
+    // perceptually useful vocal energy.  The scheduler may start the clip
+    // this much early so the audible anchor, rather than the WAV boundary,
+    // lands on the written score time.
+    double audibleOnsetOffsetSeconds = 0.0;
+    double vowelOnsetOffsetSeconds = -1.0;
+    double vocalAnchorConfidence = 0.0;
     juce::File vocalFile;
     std::vector<VocalVariant> vocalVariants;
     std::vector<ChordEvent> chords;

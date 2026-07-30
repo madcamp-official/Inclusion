@@ -259,6 +259,21 @@ bool SongPackage::loadFromFile(const juce::File& packageFile, juce::String& erro
         phrase.sourceStartSeconds = numberProperty(sourceObject, "start_sec");
         phrase.sourceEndSeconds = numberProperty(sourceObject, "end_sec");
         phrase.contentOffsetSeconds = numberProperty(vocalObject, "content_offset_sec");
+        if (const auto* syncObject =
+                vocalObject->getProperty("sync").getDynamicObject())
+        {
+            phrase.audibleOnsetOffsetSeconds = juce::jlimit(
+                0.0, 0.250,
+                numberProperty(syncObject, "audible_onset_sec"));
+            if (syncObject->hasProperty("vowel_onset_sec"))
+                phrase.vowelOnsetOffsetSeconds = juce::jlimit(
+                    0.0, 0.250,
+                    numberProperty(syncObject, "vowel_onset_sec"));
+            if (syncObject->hasProperty("confidence"))
+                phrase.vocalAnchorConfidence = juce::jlimit(
+                    0.0, 1.0,
+                    numberProperty(syncObject, "confidence"));
+        }
         const auto vocalDirectoryName = vocalObject->hasProperty("directory")
             ? stringProperty(vocalObject, "directory")
             : juce::String("vocals");

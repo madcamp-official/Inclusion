@@ -42,8 +42,14 @@ juce_add_gui_app(VocalGuitarApp
 target_sources(VocalGuitarApp PRIVATE
     src/main/Main.cpp
     src/main/MainComponent.cpp
+    src/main/AudioLatencyCalibrator.cpp
     src/mode1_vocal_follower/GuitarChordTracker.cpp
     src/mode1_vocal_follower/GuitarOnsetTracker.cpp
+    src/mode1_vocal_follower/BeatClock.cpp
+    src/mode1_vocal_follower/PredictiveTransport.cpp
+    src/mode1_vocal_follower/IntroChromaAligner.cpp
+    src/mode1_vocal_follower/ContinuousChromaExtractor.cpp
+    src/mode1_vocal_follower/PredictivePhraseScheduler.cpp
     src/mode1_vocal_follower/Mode1Controller.cpp
     src/mode1_vocal_follower/PhrasePlayer.cpp
     src/mode1_vocal_follower/PhraseScheduler.cpp
@@ -111,6 +117,11 @@ target_sources(Mode1CoreTests PRIVATE
     tests/mode1/Mode1CoreTests.cpp
     src/mode1_vocal_follower/GuitarChordTracker.cpp
     src/mode1_vocal_follower/GuitarOnsetTracker.cpp
+    src/mode1_vocal_follower/BeatClock.cpp
+    src/mode1_vocal_follower/PredictiveTransport.cpp
+    src/mode1_vocal_follower/IntroChromaAligner.cpp
+    src/mode1_vocal_follower/ContinuousChromaExtractor.cpp
+    src/mode1_vocal_follower/PredictivePhraseScheduler.cpp
     src/mode1_vocal_follower/Mode1Controller.cpp
     src/mode1_vocal_follower/PhrasePlayer.cpp
     src/mode1_vocal_follower/PhraseScheduler.cpp
@@ -239,6 +250,11 @@ target_sources(Mode1OfflineRenderer PRIVATE
     tools/mode1_offline_renderer/Main.cpp
     src/mode1_vocal_follower/GuitarChordTracker.cpp
     src/mode1_vocal_follower/GuitarOnsetTracker.cpp
+    src/mode1_vocal_follower/BeatClock.cpp
+    src/mode1_vocal_follower/PredictiveTransport.cpp
+    src/mode1_vocal_follower/IntroChromaAligner.cpp
+    src/mode1_vocal_follower/ContinuousChromaExtractor.cpp
+    src/mode1_vocal_follower/PredictivePhraseScheduler.cpp
     src/mode1_vocal_follower/Mode1Controller.cpp
     src/mode1_vocal_follower/PhrasePlayer.cpp
     src/mode1_vocal_follower/PhraseScheduler.cpp

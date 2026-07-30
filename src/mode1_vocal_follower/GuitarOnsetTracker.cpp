@@ -18,6 +18,7 @@ void GuitarOnsetTracker::reset() noexcept
     lastOnsetStrength = 1.0f;
     onsetRmsBaseline = 0.02f;
     lastOnsetAccent = 0.5f;
+    lastOnsetSampleOffset = 0;
 }
 
 bool GuitarOnsetTracker::processBlock(
@@ -28,8 +29,18 @@ bool GuitarOnsetTracker::processBlock(
         return false;
 
     double sumSquares = 0.0;
+    float peakMagnitude = 0.0f;
+    int peakSampleOffset = 0;
     for (int sample = 0; sample < numSamples; ++sample)
+    {
         sumSquares += static_cast<double>(guitarInput[sample]) * guitarInput[sample];
+        const float magnitude = std::abs(guitarInput[sample]);
+        if (magnitude > peakMagnitude)
+        {
+            peakMagnitude = magnitude;
+            peakSampleOffset = sample;
+        }
+    }
 
     currentRms = static_cast<float>(std::sqrt(sumSquares / numSamples));
     samplesSinceOnset += numSamples;
@@ -65,6 +76,7 @@ bool GuitarOnsetTracker::processBlock(
 
     if (onset)
     {
+        lastOnsetSampleOffset = peakSampleOffset;
         lastOnsetStrength =
             currentRms / std::max(previousRms, 1.0e-5f);
 

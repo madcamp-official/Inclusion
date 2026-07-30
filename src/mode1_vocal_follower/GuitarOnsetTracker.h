@@ -25,6 +25,10 @@ public:
     {
         return lastOnsetStrength;
     }
+    [[nodiscard]] int getLastOnsetSampleOffset() const noexcept
+    {
+        return lastOnsetSampleOffset;
+    }
     // Loudness of the most recent onset relative to the player's own recent
     // strums (self-calibrating, so it works regardless of input gain
     // staging). 0.5 is a typical strum, 0 is soft, 1 is hard.
@@ -42,6 +46,7 @@ private:
     float lastOnsetStrength = 1.0f;
     float onsetRmsBaseline = 0.02f;
     float lastOnsetAccent = 0.5f;
+    int lastOnsetSampleOffset = 0;
     double refractorySeconds = 0.280;
     bool arpeggioMode = false;
 

@@ -204,23 +204,54 @@ void PhrasePlayer::requestPhrase(
     int phraseIndex,
     float accent,
     double targetDurationSeconds,
-    double transitionSeconds) noexcept
+    double transitionSeconds,
+    int startDelaySamples,
+    double leadInSeconds) noexcept
 {
     requestedAccent.store(juce::jlimit(0.0f, 1.0f, accent));
     requestedDurationSeconds.store(std::max(0.0, targetDurationSeconds));
     requestedTransitionSeconds.store(
         juce::jlimit(0.004, 0.060, transitionSeconds));
+    requestedStartDelaySamples.store(std::max(0, startDelaySamples));
+    requestedLeadInSeconds.store(std::max(0.0, leadInSeconds));
     requestedPhraseIndex.store(phraseIndex);
 }
 
 void PhrasePlayer::stop() noexcept
 {
     requestedPhraseIndex.store(-1);
+    requestedStartDelaySamples.store(0);
+    delayedPhraseIndex = -1;
+    delayedStartSamplesRemaining = 0;
     currentPhraseIndex.store(-1);
     playing.store(false);
+    pendingFirstOutputPhraseIndex = -1;
+    firstOutputPhraseIndex = -1;
+    firstOutputSampleOffset = -1;
     newestVoiceIndex = -1;
     for (auto& voice : voices)
         resetVoice(voice);
+}
+
+void PhrasePlayer::fadeOutAndCancel(double fadeSeconds) noexcept
+{
+    requestedPhraseIndex.store(-1);
+    requestedStartDelaySamples.store(0);
+    delayedPhraseIndex = -1;
+    delayedStartSamplesRemaining = 0;
+    pendingFirstOutputPhraseIndex = -1;
+
+    const int requestedFadeSamples = std::max(
+        1,
+        juce::roundToInt(
+            juce::jlimit(0.010, 0.100, fadeSeconds) * outputSampleRate));
+    for (auto& voice : voices)
+    {
+        if (!voice.active)
+            continue;
+        voice.fadeOutLength = requestedFadeSamples;
+        voice.fadeOutRemaining = requestedFadeSamples;
+    }
 }
 
 void PhrasePlayer::resetVoice(PlaybackVoice& voice) noexcept
@@ -229,6 +260,7 @@ void PhrasePlayer::resetVoice(PlaybackVoice& voice) noexcept
     voice.phraseIndex = -1;
     voice.variantIndex = 0;
     voice.sourcePosition = 0;
+    voice.sourceStartPosition = 0;
     voice.samplesSinceStart = 0;
     voice.fadeInLength = 1;
     voice.fadeOutLength = 1;
@@ -290,7 +322,13 @@ void PhrasePlayer::startRequestedPhrase(int phraseIndex) noexcept
         phrase.variants[static_cast<size_t>(voice.variantIndex)];
     currentExpressionStrength.store(variant.strength);
     voice.phraseIndex = phraseIndex;
-    voice.sourcePosition = variant.contentOffsetSamples;
+    const int requestedLeadInSamples = juce::jlimit(
+        0,
+        variant.contentOffsetSamples,
+        juce::roundToInt(requestedLeadInSeconds.load() * outputSampleRate));
+    voice.sourcePosition =
+        variant.contentOffsetSamples - requestedLeadInSamples;
+    voice.sourceStartPosition = voice.sourcePosition;
     voice.fadeInLength =
         hasPreviousVoice ? requestedTransitionSamples : fadeInSamples;
     voice.currentPitchSemitones = targetPitchSemitones.load();
@@ -320,6 +358,7 @@ void PhrasePlayer::startRequestedPhrase(int phraseIndex) noexcept
     newestVoiceIndex = nextVoiceIndex;
     currentPhraseIndex.store(phraseIndex);
     playing.store(true);
+    pendingFirstOutputPhraseIndex = phraseIndex;
 }
 
 void PhrasePlayer::renderVoice(
@@ -407,8 +446,11 @@ void PhrasePlayer::renderVoice(
             * juce::jlimit(0.0f, 1.0f, linear));
     };
 
+    // Measured from where this voice actually started (which may be earlier
+    // than contentOffsetSamples when a lead-in was requested), so the tail
+    // edge-fade lands at the clip's real end rather than firing early.
     const int playbackLength =
-        variant.playbackEndSamples - variant.contentOffsetSamples;
+        variant.playbackEndSamples - voice.sourceStartPosition;
 
     for (int sample = 0; sample < produced; ++sample)
     {
@@ -430,6 +472,13 @@ void PhrasePlayer::renderVoice(
         const float value =
             voice.scratch[static_cast<size_t>(sample)]
             * fadeIn * fadeOut * edgeFade * voice.accentGain;
+        if (voice.phraseIndex == pendingFirstOutputPhraseIndex
+            && std::abs(value) > 1.0e-7f)
+        {
+            firstOutputPhraseIndex = voice.phraseIndex;
+            firstOutputSampleOffset = sample;
+            pendingFirstOutputPhraseIndex = -1;
+        }
         outputLeft[sample] += value;
         outputRight[sample] += value;
         ++voice.samplesSinceStart;
@@ -449,15 +498,60 @@ void PhrasePlayer::processBlock(
     float* outputRight,
     int numSamples) noexcept
 {
+    firstOutputPhraseIndex = -1;
+    firstOutputSampleOffset = -1;
     std::fill(outputLeft, outputLeft + numSamples, 0.0f);
     std::fill(outputRight, outputRight + numSamples, 0.0f);
 
     const int requested = requestedPhraseIndex.exchange(-1);
     if (requested >= 0)
-        startRequestedPhrase(requested);
+    {
+        delayedPhraseIndex = requested;
+        delayedStartSamplesRemaining =
+            requestedStartDelaySamples.exchange(0);
+    }
 
-    for (auto& voice : voices)
-        renderVoice(voice, outputLeft, outputRight, numSamples);
+    const int samplesBeforeStart = delayedPhraseIndex >= 0
+        ? std::min(numSamples, delayedStartSamplesRemaining)
+        : numSamples;
+    if (samplesBeforeStart > 0)
+    {
+        for (auto& voice : voices)
+            renderVoice(
+                voice, outputLeft, outputRight, samplesBeforeStart);
+    }
+
+    if (delayedPhraseIndex >= 0)
+    {
+        delayedStartSamplesRemaining -= samplesBeforeStart;
+        if (delayedStartSamplesRemaining <= 0)
+        {
+            const int phraseToStart = delayedPhraseIndex;
+            delayedPhraseIndex = -1;
+            startRequestedPhrase(phraseToStart);
+            const int remaining = numSamples - samplesBeforeStart;
+            if (remaining > 0)
+            {
+                for (auto& voice : voices)
+                    renderVoice(
+                        voice,
+                        outputLeft + samplesBeforeStart,
+                        outputRight + samplesBeforeStart,
+                        remaining);
+                if (firstOutputSampleOffset >= 0)
+                    firstOutputSampleOffset += samplesBeforeStart;
+            }
+        }
+    }
+    else if (samplesBeforeStart < numSamples)
+    {
+        for (auto& voice : voices)
+            renderVoice(
+                voice,
+                outputLeft + samplesBeforeStart,
+                outputRight + samplesBeforeStart,
+                numSamples - samplesBeforeStart);
+    }
 
     const bool anyActive = getActiveVoiceCount() > 0;
     playing.store(anyActive);

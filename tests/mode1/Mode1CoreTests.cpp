@@ -1,5 +1,9 @@
 #include "mode1_vocal_follower/GuitarOnsetTracker.h"
 #include "mode1_vocal_follower/GuitarChordTracker.h"
+#include "mode1_vocal_follower/ChordMismatchGate.h"
+#include "mode1_vocal_follower/BeatClock.h"
+#include "mode1_vocal_follower/PredictivePhraseScheduler.h"
+#include "mode1_vocal_follower/PredictiveTransport.h"
 #include "mode1_vocal_follower/Mode1Controller.h"
 #include "mode1_vocal_follower/PhrasePlayer.h"
 #include "mode1_vocal_follower/PhraseScheduler.h"
@@ -139,6 +143,78 @@ int main(int argc, char* argv[])
         : createFixturePackage();
     juce::String error;
 
+    mode1::ChordMismatchGate mismatchGate;
+    passed &= require(
+        mismatchGate.observe(0, 7, 0.50f)
+            == mode1::ChordMismatchDecision::none,
+        "one wrong chord must not pause on a possible FFT mistake");
+    passed &= require(
+        mismatchGate.observe(0, 7, 0.50f)
+            == mode1::ChordMismatchDecision::pause
+            && mismatchGate.isPaused(),
+        "two consecutive confident mismatches should pause");
+    passed &= require(
+        mismatchGate.observe(0, 7, 0.50f)
+            == mode1::ChordMismatchDecision::none
+            && mismatchGate.isPaused(),
+        "another wrong chord must keep the gate paused");
+    passed &= require(
+        mismatchGate.observe(0, 0, 0.50f)
+            == mode1::ChordMismatchDecision::resume
+            && !mismatchGate.isPaused(),
+        "one confident expected chord should resume");
+    mismatchGate.reset();
+    passed &= require(
+        mismatchGate.observe(0, 7, 0.50f, -1.0f, 1.00)
+            == mode1::ChordMismatchDecision::none
+        && mismatchGate.observe(0, 7, 0.50f, -1.0f, 1.20)
+            == mode1::ChordMismatchDecision::none
+        && !mismatchGate.isPaused(),
+        "rapid arpeggio classifications must not satisfy the mismatch hold");
+    passed &= require(
+        mismatchGate.observe(0, 7, 0.50f, -1.0f, 1.40)
+            == mode1::ChordMismatchDecision::pause,
+        "a stable wrong chord lasting 350 ms should pause");
+    mismatchGate.reset();
+    passed &= require(
+        mismatchGate.observe(0, 7, 0.50f, 0.60f)
+            == mode1::ChordMismatchDecision::none,
+        "an arpeggio-compatible chroma must override an unstable root label");
+    passed &= require(
+        mismatchGate.observe(0, 7, 0.50f, 0.60f)
+            == mode1::ChordMismatchDecision::none
+            && !mismatchGate.isPaused(),
+        "compatible chroma must not accumulate mismatch strikes");
+    mismatchGate.reset();
+    mismatchGate.observe(0, 7, 0.001f);
+    passed &= require(
+        mismatchGate.observe(0, 7, 0.001f)
+            == mode1::ChordMismatchDecision::none
+            && !mismatchGate.isPaused(),
+        "low-confidence chord guesses must not pause playback");
+
+    mode1::BeatClock shadowClock;
+    shadowClock.prepare(48'000.0, 120.0);
+    shadowClock.processBlock(
+        0, 128, true, true, 0, true, 0.0, 0.5, true);
+    shadowClock.processBlock(
+        24'000, 128, true, true, 24'000, true, 0.5, 1.0, true);
+    shadowClock.processBlock(
+        48'000, 128, true, true, 48'000, true, 1.0, 1.5, true);
+    auto clockSnapshot = shadowClock.getSnapshot();
+    passed &= require(
+        clockSnapshot.state == mode1::BeatClockState::locked,
+        "three consistent score observations should lock the BeatClock");
+    passed &= require(
+        std::abs(clockSnapshot.secondsPerBeat - 0.5) < 0.01,
+        "BeatClock should preserve a stable observed tempo");
+    shadowClock.processBlock(
+        72'128, 24'000, true, false, 0, false, -1.0, 1.0, false);
+    clockSnapshot = shadowClock.getSnapshot();
+    passed &= require(
+        clockSnapshot.state == mode1::BeatClockState::holding,
+        "one silent beat should move the BeatClock to holding");
+
     mode1::SongPackage package;
     passed &= require(
         package.loadFromFile(packageFile, error),
@@ -160,6 +236,29 @@ int main(int argc, char* argv[])
                 package.getPhrases()[1].chordRelativeStartSeconds - 0.2)
                 < 1.0e-6,
         "phrases should derive their chord segment and relative offset");
+
+    mode1::PredictiveTransport mismatchTransport;
+    mismatchTransport.prepare(48'000.0, package.getScoreBpm());
+    mismatchTransport.setSong(&package);
+    mismatchTransport.applyIntroAlignment(
+        48'000, 1.0, 0.0, 0.90, 0.01);
+    mismatchTransport.holdForChordMismatch(48'128);
+    const double heldScoreSeconds =
+        mismatchTransport.getSnapshot().scoreSeconds;
+    passed &= require(
+        mismatchTransport.getSnapshot().state
+            == mode1::BeatClockState::holding,
+        "chord mismatch should place Active v2 transport in holding");
+    mismatchTransport.resumeFromChordMismatch(
+        48'256, 0, 0.0);
+    passed &= require(
+        mismatchTransport.getSnapshot().state
+            == mode1::BeatClockState::locked,
+        "a corrected chord should relock Active v2 transport");
+    passed &= require(
+        mismatchTransport.getSnapshot().scoreSeconds
+            >= heldScoreSeconds - 1.0e-9,
+        "resuming a chord mismatch must not rewind the held score position");
 
     mode1::PhraseScheduler scheduler;
     scheduler.prepare(48'000.0);
@@ -618,6 +717,19 @@ int main(int argc, char* argv[])
     passed &= require(
         !controller.isPerformanceRunning(),
         "a loaded song should remain stopped until Start is pressed");
+    passed &= require(
+        !controller.isFollowPerformanceTempoEnabled()
+            && std::abs(controller.getVocalDurationScale() - 1.0) < 1.0e-9,
+        "performance-tempo vocal stretching should default to off");
+    controller.setFollowPerformanceTempoEnabled(true);
+    passed &= require(
+        controller.isFollowPerformanceTempoEnabled(),
+        "performance-tempo vocal stretching toggle did not enable");
+    controller.setFollowPerformanceTempoEnabled(false);
+    passed &= require(
+        !controller.isFollowPerformanceTempoEnabled()
+            && std::abs(controller.getVocalDurationScale() - 1.0) < 1.0e-9,
+        "disabling performance-tempo vocal stretching must restore 1x");
     controller.startPerformance();
     passed &= require(
         controller.isPerformanceRunning(),
@@ -631,6 +743,48 @@ int main(int argc, char* argv[])
         controller.isPerformanceRunning()
             && controller.getCurrentPhraseIndex() < 0,
         "Restart should return to the beginning and arm playback");
+
+    controller.setFollowerMode(mode1::FollowerMode::baseline);
+    controller.setPauseOnChordMismatchEnabled(true);
+    std::vector<float> gateOutputLeft(512);
+    std::vector<float> gateOutputRight(512);
+    for (const int root : { 0, 5, 7, 0, 0, 5, 11 })
+    {
+        controller.triggerVirtualChord(root);
+        controller.triggerNextPhrase();
+        controller.processBlock(
+            silence.data(),
+            gateOutputLeft.data(),
+            gateOutputRight.data(),
+            static_cast<int>(silence.size()));
+    }
+    for (int block = 0; block < 40; ++block)
+        controller.processBlock(
+            silence.data(),
+            gateOutputLeft.data(),
+            gateOutputRight.data(),
+            static_cast<int>(silence.size()));
+    controller.triggerVirtualChord(11);
+    controller.processBlock(
+        silence.data(),
+        gateOutputLeft.data(),
+        gateOutputRight.data(),
+        static_cast<int>(silence.size()));
+    passed &= require(
+        controller.isPausedForChordMismatch(),
+        "two wrong virtual chords should pause controller vocal output");
+    controller.triggerVirtualChord(7);
+    controller.processBlock(
+        silence.data(),
+        gateOutputLeft.data(),
+        gateOutputRight.data(),
+        static_cast<int>(silence.size()));
+    passed &= require(
+        !controller.isPausedForChordMismatch(),
+        "the expected virtual chord should resume controller playback");
+    controller.setPauseOnChordMismatchEnabled(false);
+    controller.restartPerformance();
+
     controller.startAutomaticPlayback();
     controller.setManualKeyShift(3);
     passed &= require(
@@ -680,6 +834,7 @@ int main(int argc, char* argv[])
                     && controller.getPitchShiftSemitones() == 0)),
         "original-key anchor should avoid a +17 real-time pitch shift");
     controller.startAutomaticPlayback();
+    controller.setRealtimeTraceEnabled(true);
 
     std::vector<float> outputLeft(512);
     std::vector<float> outputRight(512);
@@ -695,6 +850,22 @@ int main(int argc, char* argv[])
             outputEnergy += static_cast<double>(sample) * sample;
     }
     passed &= require(outputEnergy > 1.0e-5, "phrase player produced silence");
+    int requestedTraceCount = 0;
+    int firstOutputTraceCount = 0;
+    mode1::RealtimeTraceEvent traceEvent;
+    while (controller.popRealtimeTraceEvent(traceEvent))
+    {
+        requestedTraceCount +=
+            traceEvent.type == mode1::RealtimeTraceType::phraseRequested;
+        firstOutputTraceCount +=
+            traceEvent.type == mode1::RealtimeTraceType::vocalFirstOutput;
+    }
+    passed &= require(
+        requestedTraceCount > 0 && firstOutputTraceCount > 0,
+        "realtime trace should capture phrase request and first output");
+    passed &= require(
+        controller.getDroppedRealtimeTraceCount() == 0,
+        "realtime trace should not overflow in a normal render");
     passed &= require(
         controller.getCurrentLyrics().isNotEmpty(),
         "controller did not expose current phrase lyrics");

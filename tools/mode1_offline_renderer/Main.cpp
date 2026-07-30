@@ -46,15 +46,56 @@ void applySafetyGain(juce::AudioBuffer<float>& audio)
     if (peak > 0.98f)
         audio.applyGain(0.98f / peak);
 }
+
+const char* traceTypeName(mode1::RealtimeTraceType type)
+{
+    switch (type)
+    {
+        case mode1::RealtimeTraceType::onsetDetected:
+            return "onset_detected";
+        case mode1::RealtimeTraceType::scoreEventChanged:
+            return "score_event_changed";
+        case mode1::RealtimeTraceType::phraseRequested:
+            return "phrase_requested";
+        case mode1::RealtimeTraceType::vocalFirstOutput:
+            return "vocal_first_output";
+        case mode1::RealtimeTraceType::beatClockObservation:
+            return "beat_clock_observation";
+        case mode1::RealtimeTraceType::beatClockStateChanged:
+            return "beat_clock_state_changed";
+        case mode1::RealtimeTraceType::introChromaAlignmentLocked:
+            return "intro_chroma_alignment_locked";
+        case mode1::RealtimeTraceType::predictiveTimingCorrection:
+            return "predictive_timing_correction";
+        case mode1::RealtimeTraceType::predictiveTransportState:
+            return "predictive_transport_state";
+        case mode1::RealtimeTraceType::predictivePhraseScheduled:
+            return "predictive_phrase_scheduled";
+        case mode1::RealtimeTraceType::predictivePhraseCancelled:
+            return "predictive_phrase_cancelled";
+        case mode1::RealtimeTraceType::chordMismatchObservation:
+            return "chord_mismatch_observation";
+        case mode1::RealtimeTraceType::chordMismatchPaused:
+            return "chord_mismatch_paused";
+        case mode1::RealtimeTraceType::chordMismatchResumed:
+            return "chord_mismatch_resumed";
+    }
+    return "unknown";
+}
 } // namespace
 
 int main(int argc, char* argv[])
 {
-    if (argc < 4 || argc > 6)
+    if (argc < 4 || argc > 13)
     {
         std::cerr
             << "usage: Mode1OfflineRenderer <song_package.json> "
-               "<guitar.wav> <output-directory> [block-size] [guitar-gain]\n";
+               "<guitar.wav> <output-directory> [block-size] [guitar-gain] "
+               "[baseline|shadow|active|v2shadow|v2active] "
+               "[expression-strength] [manual-key-shift] "
+               "[input-latency-ms] [output-latency-ms] "
+               "[pause-on-chord-mismatch:0|1] "
+               "[follow-performance-tempo:0|1]\n";
         return 2;
     }
 
@@ -70,6 +111,34 @@ int main(int argc, char* argv[])
     const float guitarGain = argc >= 6
         ? std::max(0.0f, static_cast<float>(std::atof(argv[5])))
         : 2.0f;
+    const juce::String followerMode = argc >= 7
+        ? juce::String::fromUTF8(argv[6]).toLowerCase()
+        : "baseline";
+    const int expressionStrength = argc >= 8
+        ? juce::jlimit(0, 100, std::atoi(argv[7]))
+        : -1;
+    const int manualKeyShift = argc >= 9
+        ? std::atoi(argv[8])
+        : 0;
+    const double inputLatencySeconds = argc >= 10
+        ? std::max(0.0, std::atof(argv[9]) / 1000.0)
+        : 0.0;
+    const double outputLatencyMilliseconds = argc >= 11
+        ? std::max(0.0, std::atof(argv[10]))
+        : -1.0;
+    const bool pauseOnChordMismatch = argc >= 12
+        && std::atoi(argv[11]) != 0;
+    const bool followPerformanceTempo = argc >= 13
+        && std::atoi(argv[12]) != 0;
+    if (followerMode != "baseline"
+        && followerMode != "shadow"
+        && followerMode != "active"
+        && followerMode != "v2shadow"
+        && followerMode != "v2active")
+    {
+        std::cerr << "invalid follower mode: " << followerMode << '\n';
+        return 2;
+    }
 
     if (!packageFile.existsAsFile())
     {
@@ -138,11 +207,45 @@ int main(int argc, char* argv[])
 
     mode1::Mode1Controller controller;
     controller.prepare(sampleRate, blockSize);
-    controller.setOutputLatencySeconds(blockSize / sampleRate);
+    controller.setFollowerMode(
+        followerMode == "v2active"
+            ? mode1::FollowerMode::activeV2
+            : followerMode == "v2shadow"
+            ? mode1::FollowerMode::activeV2Shadow
+            : followerMode == "active"
+            ? mode1::FollowerMode::predictiveActive
+            : followerMode == "shadow"
+                ? mode1::FollowerMode::predictiveShadow
+                : mode1::FollowerMode::baseline);
+    controller.setRealtimeTraceEnabled(true);
+    controller.setPauseOnChordMismatchEnabled(
+        pauseOnChordMismatch);
+    controller.setFollowPerformanceTempoEnabled(
+        followPerformanceTempo);
+    const double outputLatencySeconds =
+        outputLatencyMilliseconds >= 0.0
+            ? outputLatencyMilliseconds / 1000.0
+            : blockSize / sampleRate;
+    controller.setInputLatencySeconds(inputLatencySeconds);
+    controller.setOutputLatencySeconds(outputLatencySeconds);
     juce::String loadError;
     if (!controller.loadSongPackage(packageFile, loadError))
     {
         std::cerr << "failed to load song package: "
+                  << loadError << '\n';
+        return 1;
+    }
+    if (expressionStrength >= 0
+        && !controller.setExpressionStrength(
+            expressionStrength, &loadError))
+    {
+        std::cerr << "failed to load expression strength: "
+                  << loadError << '\n';
+        return 1;
+    }
+    if (!controller.setManualKeyShift(manualKeyShift, &loadError))
+    {
+        std::cerr << "failed to set manual key shift: "
                   << loadError << '\n';
         return 1;
     }
@@ -162,6 +265,14 @@ int main(int argc, char* argv[])
     detectionRows.add("time_sec,raw_detected_chord");
     juce::StringArray onsetRows;
     onsetRows.add("time_sec,raw_detected_chord");
+    juce::StringArray realtimeTraceRows;
+    realtimeTraceRows.add(
+        "type,sample,time_sec,related_sample,related_time_sec,"
+        "delta_ms,index,value,flags,value2");
+    juce::StringArray chromaRows;
+    chromaRows.add(
+        "time_sec,c,c_sharp,d,d_sharp,e,f,f_sharp,g,g_sharp,a,a_sharp,b");
+    std::uint64_t previousChromaSequence = 0;
     int previousPhrase = -1;
     int previousChordEvent = -1;
     juce::String previousRawChord;
@@ -188,6 +299,40 @@ int main(int argc, char* argv[])
             left.data(),
             right.data(),
             count);
+        const auto chromaFrame =
+            controller.getDiagnosticContinuousChromaFrame();
+        if ((followerMode == "v2shadow" || followerMode == "v2active")
+            && chromaFrame.valid
+            && chromaFrame.sequence != previousChromaSequence)
+        {
+            previousChromaSequence = chromaFrame.sequence;
+            juce::String row(
+                controller.getDiagnosticChromaWindowStartSample()
+                    / sampleRate,
+                9);
+            for (const auto value : chromaFrame.values)
+                row += "," + juce::String(value, 9);
+            chromaRows.add(row);
+        }
+        mode1::RealtimeTraceEvent traceEvent;
+        while (controller.popRealtimeTraceEvent(traceEvent))
+        {
+            realtimeTraceRows.add(
+                juce::String(traceTypeName(traceEvent.type))
+                + "," + juce::String(traceEvent.sample)
+                + "," + juce::String(traceEvent.sample / sampleRate, 9)
+                + "," + juce::String(traceEvent.relatedSample)
+                + "," + juce::String(
+                    traceEvent.relatedSample / sampleRate, 9)
+                + "," + juce::String(
+                    (traceEvent.relatedSample - traceEvent.sample)
+                        * 1000.0 / sampleRate,
+                    6)
+                + "," + juce::String(traceEvent.index)
+                + "," + juce::String(traceEvent.value, 6)
+                + "," + juce::String(traceEvent.flags)
+                + "," + juce::String(traceEvent.value2, 6));
+        }
 
         vocals.copyFrom(0, start, left.data(), count);
         vocals.copyFrom(1, start, right.data(), count);
@@ -310,8 +455,42 @@ int main(int argc, char* argv[])
         std::cerr << "could not write raw onset log\n";
         return 1;
     }
+    const auto realtimeTraceFile =
+        outputDirectory.getChildFile("realtime_trace.csv");
+    if (!realtimeTraceFile.replaceWithText(
+            realtimeTraceRows.joinIntoString("\n") + "\n"))
+    {
+        std::cerr << "could not write realtime trace log\n";
+        return 1;
+    }
+    const auto chromaFile =
+        outputDirectory.getChildFile("continuous_chroma.csv");
+    if ((followerMode == "v2shadow" || followerMode == "v2active")
+        && !chromaFile.replaceWithText(
+            chromaRows.joinIntoString("\n") + "\n"))
+    {
+        std::cerr << "could not write continuous chroma log\n";
+        return 1;
+    }
 
     std::cout << "sample_rate=" << sampleRate << '\n'
+              << "follower_mode=" << followerMode << '\n'
+              << "expression_strength="
+              << (expressionStrength >= 0
+                      ? expressionStrength
+                      : controller.getExpressionStrength())
+              << '\n'
+              << "manual_key_shift=" << manualKeyShift << '\n'
+              << "input_latency_ms="
+              << inputLatencySeconds * 1000.0 << '\n'
+              << "output_latency_ms="
+              << outputLatencySeconds * 1000.0 << '\n'
+              << "pause_on_chord_mismatch="
+              << (pauseOnChordMismatch ? 1 : 0) << '\n'
+              << "follow_performance_tempo="
+              << (followPerformanceTempo ? 1 : 0) << '\n'
+              << "vocal_duration_scale="
+              << controller.getVocalDurationScale() << '\n'
               << "block_size=" << blockSize << '\n'
               << "input_duration_sec="
               << guitar.getNumSamples() / sampleRate << '\n'
@@ -333,11 +512,17 @@ int main(int argc, char* argv[])
               << controller.getAcceptedTimingAnchorCount() << '\n'
               << "rejected_timing_anchors="
               << controller.getRejectedTimingAnchorCount() << '\n'
+              << "realtime_trace_events="
+              << realtimeTraceRows.size() - 1 << '\n'
+              << "realtime_trace_dropped="
+              << controller.getDroppedRealtimeTraceCount() << '\n'
               << "vocal_peak=" << peakMagnitude(vocals) << '\n'
               << "combined_peak=" << peakMagnitude(combined) << '\n'
               << "vocal_output=" << vocalFile.getFullPathName() << '\n'
               << "combined_output=" << combinedFile.getFullPathName() << '\n'
               << "event_log=" << eventsFile.getFullPathName() << '\n'
               << "tracking_log=" << trackingFile.getFullPathName() << '\n';
+    std::cout << "realtime_trace_log="
+              << realtimeTraceFile.getFullPathName() << '\n';
     return 0;
 }

@@ -21,6 +21,9 @@ void GuitarChordTracker::reset() noexcept
     writePosition = 0;
     validSamples = 0;
     pendingAnalysisSamples = -1;
+    samplesUntilContinuousAnalysis = 0;
+    chromaSequence = 0;
+    latestChromaFrame = {};
 }
 
 bool GuitarChordTracker::processBlock(
@@ -39,6 +42,20 @@ bool GuitarChordTracker::processBlock(
         writePosition = (writePosition + 1) % fftSize;
     }
     validSamples = std::min(fftSize, validSamples + numSamples);
+
+    samplesUntilContinuousAnalysis -= numSamples;
+    if (samplesUntilContinuousAnalysis <= 0 && validSamples >= fftSize / 2)
+    {
+        const auto continuousDetection = analyse();
+        latestChromaFrame.values = continuousDetection.chroma;
+        latestChromaFrame.valid = std::accumulate(
+            latestChromaFrame.values.begin(),
+            latestChromaFrame.values.end(),
+            0.0f) > 1.0e-5f;
+        latestChromaFrame.sequence = ++chromaSequence;
+        samplesUntilContinuousAnalysis =
+            std::max(1, juce::roundToInt(0.020 * sampleRate));
+    }
 
     if (onset)
         pendingAnalysisSamples = juce::roundToInt(0.075 * sampleRate);
@@ -214,6 +231,7 @@ ChordDetection GuitarChordTracker::analyse() noexcept
         || bestQuality == ChordQuality::minor7;
     detection.confidence = confidence;
     detection.pitchClassMask = pitchClassMask;
+    detection.chroma = chroma;
     return detection;
 }
 

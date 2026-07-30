@@ -1,6 +1,46 @@
 #include "MainComponent.h"
 
 #include <algorithm>
+#include <cmath>
+
+namespace
+{
+const char* realtimeTraceTypeName(mode1::RealtimeTraceType type) noexcept
+{
+    switch (type)
+    {
+        case mode1::RealtimeTraceType::onsetDetected:
+            return "onset_detected";
+        case mode1::RealtimeTraceType::scoreEventChanged:
+            return "score_event_changed";
+        case mode1::RealtimeTraceType::phraseRequested:
+            return "phrase_requested";
+        case mode1::RealtimeTraceType::vocalFirstOutput:
+            return "vocal_first_output";
+        case mode1::RealtimeTraceType::beatClockObservation:
+            return "beat_clock_observation";
+        case mode1::RealtimeTraceType::beatClockStateChanged:
+            return "beat_clock_state_changed";
+        case mode1::RealtimeTraceType::introChromaAlignmentLocked:
+            return "intro_chroma_alignment_locked";
+        case mode1::RealtimeTraceType::predictiveTimingCorrection:
+            return "predictive_timing_correction";
+        case mode1::RealtimeTraceType::predictiveTransportState:
+            return "predictive_transport_state";
+        case mode1::RealtimeTraceType::predictivePhraseScheduled:
+            return "predictive_phrase_scheduled";
+        case mode1::RealtimeTraceType::predictivePhraseCancelled:
+            return "predictive_phrase_cancelled";
+        case mode1::RealtimeTraceType::chordMismatchObservation:
+            return "chord_mismatch_observation";
+        case mode1::RealtimeTraceType::chordMismatchPaused:
+            return "chord_mismatch_paused";
+        case mode1::RealtimeTraceType::chordMismatchResumed:
+            return "chord_mismatch_resumed";
+    }
+    return "unknown";
+}
+}
 
 MainComponent::MainComponent()
 {
@@ -10,6 +50,7 @@ MainComponent::MainComponent()
     statusLabel.setText(L"모드를 선택하세요.", juce::dontSendNotification);
     statusLabel.setJustificationType(juce::Justification::centred);
     addAndMakeVisible(statusLabel);
+    selectPreferredLowLatencyDevice();
 
     mode1Button.onClick = [this] { selectMode1(); };
     mode2Button.onClick = [this]
@@ -24,6 +65,7 @@ MainComponent::MainComponent()
         setVirtualControlsEnabled(false);
         guitarReplayActive.store(false);
         guitarTestRecorder.stop();
+        performanceOutputRecorder.stop();
         refreshGuitarTestControls();
         statusLabel.setText(
             L"Mode 2는 이 작업공간에 아직 연결되지 않았습니다.",
@@ -33,8 +75,118 @@ MainComponent::MainComponent()
     addAndMakeVisible(mode2Button);
 
     loadSongButton.onClick = [this] { chooseSongPackage(); };
+    songSelector.setTextWhenNothingSelected(L"곡 선택");
+    songSelector.addItem(L"만찬가", 1);
+    songSelector.addItem("Don't Look Back in Anger", 2);
+    songSelector.addItem("Hype Boy", 3);
+    songSelector.setTooltip(L"Mode 1에서 연주할 곡을 선택합니다.");
+    songSelector.onChange = [this]
+    {
+        juce::String songSlug;
+        if (songSelector.getSelectedId() == 1)
+            songSlug = "bansanka";
+        else if (songSelector.getSelectedId() == 2)
+            songSlug = "dont_look_back_in_anger";
+        else if (songSelector.getSelectedId() == 3)
+            songSlug = "hype_boy";
+        else
+            return;
+
+        const auto package = findBundledSongPackage(songSlug);
+        if (!package.existsAsFile())
+        {
+            statusLabel.setText(
+                L"곡 패키지를 찾을 수 없습니다: "
+                    + package.getFullPathName(),
+                juce::dontSendNotification);
+            return;
+        }
+
+        loadSongPackage(package);
+    };
+    followerModeSelector.addItem(L"기준선", 1);
+    followerModeSelector.addItem(L"예측 Shadow", 2);
+    followerModeSelector.addItem(L"예측 Active", 3);
+    followerModeSelector.addItem(L"Active v2 Shadow", 4);
+    followerModeSelector.addItem(L"Active v2", 5);
+    followerModeSelector.setSelectedId(2, juce::dontSendNotification);
+    followerModeSelector.setTooltip(
+        L"Shadow는 측정만 하고, Active만 제한된 다음 경계 예측을 재생에 적용합니다.");
+    followerModeSelector.onChange = [this]
+    {
+        const auto selected = followerModeSelector.getSelectedId();
+        const auto mode = selected == 5
+            ? mode1::FollowerMode::activeV2
+            : selected == 4
+            ? mode1::FollowerMode::activeV2Shadow
+            : selected == 3
+                ? mode1::FollowerMode::predictiveActive
+            : selected == 2
+                ? mode1::FollowerMode::predictiveShadow
+                : mode1::FollowerMode::baseline;
+        {
+            const juce::ScopedLock callbackLock(
+                deviceManager.getAudioCallbackLock());
+            mode1Controller.setFollowerMode(mode);
+        }
+        statusLabel.setText(
+            selected == 5
+                ? L"Active v2: 연속 transport 예측을 실제 보컬 출력에 적용"
+                : selected == 4
+                ? L"Active v2 Shadow: 소리는 기준선, 연속 transport 예약/취소만 측정"
+                : selected == 3
+                ? L"예측 Active: 신뢰도 gate를 통과한 다음 악보 경계만 미리 예약"
+                : selected == 2
+                    ? L"예측 Shadow: 소리는 기준선, BeatClock만 측정"
+                    : L"기준선: 기타 이벤트 기반 재생",
+            juce::dontSendNotification);
+    };
     nextPhraseButton.onClick = [this] { triggerNextPhrase(); };
     nextPhraseButton.setEnabled(false);
+    addAndMakeVisible(songSelector);
+    addAndMakeVisible(followerModeSelector);
+    pauseOnWrongChordToggle.setToggleState(
+        false, juce::dontSendNotification);
+    pauseOnWrongChordToggle.setTooltip(
+        L"연속된 코드 불일치를 감지하면 보컬을 멈추고, 올바른 코드에서 다음 가사부터 재개합니다.");
+    pauseOnWrongChordToggle.onClick = [this]
+    {
+        const bool enabled =
+            pauseOnWrongChordToggle.getToggleState();
+        {
+            const juce::ScopedLock callbackLock(
+                deviceManager.getAudioCallbackLock());
+            mode1Controller.setPauseOnChordMismatchEnabled(enabled);
+        }
+        statusLabel.setText(
+            enabled
+                ? L"코드 오류 일시정지 켜짐 · 불일치 2회 시 정지"
+                : L"코드 오류 일시정지 꺼짐",
+            juce::dontSendNotification);
+        grabKeyboardFocus();
+    };
+    addAndMakeVisible(pauseOnWrongChordToggle);
+    followPerformanceTempoToggle.setToggleState(
+        false, juce::dontSendNotification);
+    followPerformanceTempoToggle.setTooltip(
+        L"기타 연주의 안정화된 템포에 맞춰 보컬 발음 길이를 자연스럽게 늘리거나 줄입니다.");
+    followPerformanceTempoToggle.onClick = [this]
+    {
+        const bool enabled =
+            followPerformanceTempoToggle.getToggleState();
+        {
+            const juce::ScopedLock callbackLock(
+                deviceManager.getAudioCallbackLock());
+            mode1Controller.setFollowPerformanceTempoEnabled(enabled);
+        }
+        statusLabel.setText(
+            enabled
+                ? L"연주 속도 보컬 추종 켜짐 · 안정화된 템포를 부드럽게 적용"
+                : L"연주 속도 보컬 추종 꺼짐 · 원래 발음 길이 유지",
+            juce::dontSendNotification);
+        grabKeyboardFocus();
+    };
+    addAndMakeVisible(followPerformanceTempoToggle);
     addAndMakeVisible(loadSongButton);
     addAndMakeVisible(nextPhraseButton);
 
@@ -69,6 +221,19 @@ MainComponent::MainComponent()
     audioSettingsButton.setTooltip(
         L"오인페, 드라이버, 샘플레이트와 버퍼 크기를 설정합니다.");
     addAndMakeVisible(audioSettingsButton);
+
+    measureLatencyButton.onClick = [this] { requestLatencyMeasurement(); };
+    measureLatencyButton.setTooltip(
+        L"오인페 출력을 선택한 기타 입력으로 연결해 실제 왕복 레이턴시를 측정합니다.");
+    applyLatencyButton.onClick = [this] { applyLatencyMeasurement(); };
+    applyLatencyButton.setEnabled(false);
+    resetLatencyButton.onClick = [this] { resetLatencyCompensation(); };
+    latencyStatusLabel.setJustificationType(juce::Justification::centredLeft);
+    latencyStatusLabel.setMinimumHorizontalScale(0.72f);
+    addAndMakeVisible(measureLatencyButton);
+    addAndMakeVisible(applyLatencyButton);
+    addAndMakeVisible(resetLatencyButton);
+    addAndMakeVisible(latencyStatusLabel);
 
     guitarChannelSelector.setTextWhenNothingSelected("Guitar input channel");
     for (int channel = 0; channel < 8; ++channel)
@@ -318,15 +483,22 @@ MainComponent::MainComponent()
     addChildComponent(recordingSessionScreen);
 
     configureLowLatencyAudio();
+    refreshLatencyDisplay();
     startTimerHz(15);
-    setSize(900, 930);
+    setSize(980, 1000);
 }
 
 MainComponent::~MainComponent()
 {
     stopTimer();
     voiceRecorder.stop();
-    guitarTestRecorder.stop();
+    {
+        const juce::ScopedLock callbackLock(
+            deviceManager.getAudioCallbackLock());
+        guitarTestRecorder.stop();
+        performanceOutputRecorder.stop();
+        mode1Controller.setRealtimeTraceEnabled(false);
+    }
     shutdownAudio();
 }
 
@@ -337,13 +509,28 @@ void MainComponent::prepareToPlay(int samplesPerBlockExpected, double sampleRate
         static_cast<size_t>(std::max(1, samplesPerBlockExpected)),
         0.0f);
     mode1Controller.prepare(sampleRate, samplesPerBlockExpected);
+    audioLatencyCalibrator.prepare(sampleRate);
     if (auto* device = deviceManager.getCurrentAudioDevice())
     {
-        mode1Controller.setOutputLatencySeconds(
-            device->getOutputLatencyInSamples() / sampleRate);
+        reportedInputLatencySamples = device->getInputLatencyInSamples();
+        reportedOutputLatencySamples = device->getOutputLatencyInSamples();
+        const bool canReuseAppliedMeasurement =
+            measuredLatencyApplied.load()
+            && latencyResultMatchesCurrentDevice();
+        const double inputSeconds = canReuseAppliedMeasurement
+            ? effectiveInputLatencySeconds.load()
+            : reportedInputLatencySamples / sampleRate;
+        const double outputSeconds = canReuseAppliedMeasurement
+            ? effectiveOutputLatencySeconds.load()
+            : reportedOutputLatencySamples / sampleRate;
+        if (!canReuseAppliedMeasurement)
+            measuredLatencyApplied.store(false);
+        mode1Controller.setInputLatencySeconds(inputSeconds);
+        mode1Controller.setOutputLatencySeconds(outputSeconds);
     }
     voiceRecorder.prepare(sampleRate);
     guitarTestRecorder.prepare(sampleRate);
+    performanceOutputRecorder.prepare(sampleRate);
     inputLevelCalibrator.prepare(sampleRate);
     guidedRecordingSession.prepare(sampleRate);
 }
@@ -473,6 +660,22 @@ void MainComponent::getNextAudioBlock(
 
     bufferToFill.clearActiveBufferRegion();
 
+    if (audioLatencyCalibrator.isMeasuring())
+    {
+        auto* outputLeft = buffer.getNumChannels() > 0
+            ? buffer.getWritePointer(0, startSample)
+            : nullptr;
+        auto* outputRight = buffer.getNumChannels() > 1
+            ? buffer.getWritePointer(1, startSample)
+            : nullptr;
+        audioLatencyCalibrator.processBlock(
+            guitarInputScratch.data(),
+            outputLeft,
+            outputRight,
+            numSamples);
+        return;
+    }
+
     if (activeMode != ActiveMode::mode1
         || !mode1Controller.hasSong()
         || buffer.getNumChannels() < 2)
@@ -485,15 +688,246 @@ void MainComponent::getNextAudioBlock(
         outputLeft,
         outputRight,
         numSamples);
+    if (performanceOutputRecorder.isRecording())
+        performanceOutputRecorder.processBlock(
+            buffer, 0, startSample, numSamples);
 }
 
 void MainComponent::releaseResources()
 {
+    audioLatencyCalibrator.cancel();
     mode1Controller.reset();
     voiceRecorder.stop();
     guitarTestRecorder.stop();
+    performanceOutputRecorder.stop();
     guitarReplayActive.store(false);
     guidedRecordingSession.stop();
+}
+
+void MainComponent::requestLatencyMeasurement()
+{
+    const auto options = juce::MessageBoxOptions()
+        .withIconType(juce::MessageBoxIconType::WarningIcon)
+        .withTitle(L"오디오 왕복 레이턴시 측정")
+        .withMessage(
+            L"1. 스피커/헤드폰 볼륨을 낮추세요.\n"
+            L"2. 오인페 출력 1을 현재 선택한 기타 입력 "
+            + juce::String(guitarChannelIndex.load() + 1)
+            + L"에 케이블로 연결하세요.\n"
+            L"3. 직접 모니터링과 이펙트를 끄세요.\n\n"
+            L"약 2초간 작은 테스트 신호를 5번 보냅니다.")
+        .withButton(L"측정 시작")
+        .withButton(L"취소");
+
+    juce::AlertWindow::showAsync(
+        options,
+        [safeThis = juce::Component::SafePointer<MainComponent>(this)]
+        (int result)
+        {
+            if (result == 1 && safeThis != nullptr)
+                safeThis->beginLatencyMeasurement();
+        });
+}
+
+void MainComponent::beginLatencyMeasurement()
+{
+    auto* device = deviceManager.getCurrentAudioDevice();
+    if (device == nullptr)
+    {
+        latencyStatusLabel.setText(
+            L"오디오 장치가 열려 있지 않습니다.",
+            juce::dontSendNotification);
+        return;
+    }
+
+    {
+        const juce::ScopedLock callbackLock(
+            deviceManager.getAudioCallbackLock());
+        guitarReplayActive.store(false);
+        guitarReplayFinished.store(false);
+        guitarTestRecorder.stop();
+        performanceOutputRecorder.stop();
+        mode1Controller.stopPerformance();
+        if (!audioLatencyCalibrator.start())
+        {
+            latencyStatusLabel.setText(
+                L"측정을 시작할 수 없습니다. 잠시 후 다시 시도하세요.",
+                juce::dontSendNotification);
+            return;
+        }
+    }
+
+    hasLatencyResult = false;
+    applyLatencyButton.setEnabled(false);
+    measureLatencyButton.setEnabled(false);
+    latencyStatusLabel.setColour(
+        juce::Label::textColourId, juce::Colours::yellow);
+    latencyStatusLabel.setText(
+        L"측정 중… 케이블을 건드리지 마세요.",
+        juce::dontSendNotification);
+    refreshTransportControls();
+}
+
+void MainComponent::applyLatencyMeasurement()
+{
+    if (!hasLatencyResult
+        || !lastLatencyResult.valid
+        || !latencyResultMatchesCurrentDevice())
+    {
+        latencyStatusLabel.setText(
+            L"현재 장치 설정과 일치하는 유효한 측정값이 없습니다.",
+            juce::dontSendNotification);
+        return;
+    }
+
+    const double reportedTotal =
+        reportedInputLatencySamples + reportedOutputLatencySamples;
+    const double measuredTotal = lastLatencyResult.roundTripSamples;
+    const double inputRatio = reportedTotal > 0.0
+        ? reportedInputLatencySamples / reportedTotal
+        : 0.5;
+    const double effectiveInputSamples = measuredTotal * inputRatio;
+    const double effectiveOutputSamples =
+        measuredTotal - effectiveInputSamples;
+
+    effectiveInputLatencySeconds.store(
+        effectiveInputSamples / currentSampleRate);
+    effectiveOutputLatencySeconds.store(
+        effectiveOutputSamples / currentSampleRate);
+    measuredLatencyApplied.store(true);
+    {
+        const juce::ScopedLock callbackLock(
+            deviceManager.getAudioCallbackLock());
+        mode1Controller.setInputLatencySeconds(
+            effectiveInputLatencySeconds.load());
+        mode1Controller.setOutputLatencySeconds(
+            effectiveOutputLatencySeconds.load());
+    }
+    refreshLatencyDisplay();
+}
+
+void MainComponent::resetLatencyCompensation()
+{
+    measuredLatencyApplied.store(false);
+    const double inputSeconds =
+        reportedInputLatencySamples / currentSampleRate;
+    const double outputSeconds =
+        reportedOutputLatencySamples / currentSampleRate;
+    {
+        const juce::ScopedLock callbackLock(
+            deviceManager.getAudioCallbackLock());
+        mode1Controller.setInputLatencySeconds(inputSeconds);
+        mode1Controller.setOutputLatencySeconds(outputSeconds);
+    }
+    refreshLatencyDisplay();
+}
+
+bool MainComponent::latencyResultMatchesCurrentDevice() const
+{
+    auto* device = deviceManager.getCurrentAudioDevice();
+    return device != nullptr
+        && latencyMeasurementDeviceName == device->getName()
+        && std::abs(latencyMeasurementSampleRate - currentSampleRate) < 1.0
+        && latencyMeasurementBufferSize
+            == device->getCurrentBufferSizeSamples();
+}
+
+void MainComponent::refreshLatencyDisplay()
+{
+    auto* device = deviceManager.getCurrentAudioDevice();
+    if (device == nullptr)
+    {
+        latencyStatusLabel.setText(
+            L"오디오 장치 없음", juce::dontSendNotification);
+        return;
+    }
+
+    const double reportedMs =
+        1000.0 * (reportedInputLatencySamples + reportedOutputLatencySamples)
+        / currentSampleRate;
+    juce::String text =
+        device->getTypeName() + L" / " + device->getName()
+        + L" · " + juce::String(currentSampleRate / 1000.0, 1)
+        + L"kHz / " + juce::String(device->getCurrentBufferSizeSamples())
+        + L" samples · 드라이버 왕복 "
+        + juce::String(reportedMs, 1) + L"ms";
+
+    if (hasLatencyResult && latencyResultMatchesCurrentDevice())
+    {
+        const double measuredMs =
+            1000.0 * lastLatencyResult.roundTripSamples / currentSampleRate;
+        const double jitterMs =
+            1000.0 * lastLatencyResult.jitterSamples / currentSampleRate;
+        text += L" · 실측 " + juce::String(measuredMs, 1)
+            + L"ms (편차 " + juce::String(jitterMs, 2)
+            + L"ms, " + juce::String(lastLatencyResult.successfulProbes)
+            + L"/" + juce::String(lastLatencyResult.totalProbes) + L")";
+    }
+    text += measuredLatencyApplied.load() ? L" · [실측 적용]" : L" · [드라이버 값]";
+    latencyStatusLabel.setColour(
+        juce::Label::textColourId,
+        measuredLatencyApplied.load()
+            ? juce::Colours::lightgreen
+            : juce::Colours::lightgrey);
+    latencyStatusLabel.setText(text, juce::dontSendNotification);
+
+    juce::StringArray supportedBufferSizes;
+    for (const int size : device->getAvailableBufferSizes())
+        supportedBufferSizes.add(juce::String(size));
+    latencyStatusLabel.setTooltip(
+        L"현재 드라이버: " + device->getTypeName()
+        + L"\n지원 버퍼(samples): "
+        + supportedBufferSizes.joinIntoString(", "));
+}
+
+void MainComponent::selectPreferredLowLatencyDevice()
+{
+   #if JUCE_WINDOWS && JUCE_ASIO
+    auto* currentDevice = deviceManager.getCurrentAudioDevice();
+    if (deviceManager.getCurrentAudioDeviceType() == "ASIO"
+        && currentDevice != nullptr
+        && currentDevice->getName().containsIgnoreCase("Focusrite USB"))
+        return;
+
+    deviceManager.setCurrentAudioDeviceType("ASIO", true);
+    auto* type = deviceManager.getCurrentDeviceTypeObject();
+    if (type == nullptr || type->getTypeName() != "ASIO")
+        return;
+
+    type->scanForDevices();
+    const auto inputNames = type->getDeviceNames(true);
+    const auto outputNames = type->getDeviceNames(false);
+    juce::String focusriteInput;
+    juce::String focusriteOutput;
+    for (const auto& name : inputNames)
+        if (name.containsIgnoreCase("Focusrite USB"))
+            focusriteInput = name;
+    for (const auto& name : outputNames)
+        if (name.containsIgnoreCase("Focusrite USB"))
+            focusriteOutput = name;
+
+    if (focusriteInput.isEmpty() || focusriteOutput.isEmpty())
+        return;
+
+    auto setup = deviceManager.getAudioDeviceSetup();
+    setup.inputDeviceName = focusriteInput;
+    setup.outputDeviceName = focusriteOutput;
+    setup.sampleRate = 48'000.0;
+    setup.bufferSize = 128;
+    auto error = deviceManager.setAudioDeviceSetup(setup, true);
+    if (error.isNotEmpty())
+    {
+        // Some Focusrite driver revisions require buffer changes through
+        // Focusrite Device Settings. Keep ASIO selected in that case.
+        setup.bufferSize = 0;
+        error = deviceManager.setAudioDeviceSetup(setup, true);
+    }
+
+    if (error.isNotEmpty())
+        statusLabel.setText(
+            L"Focusrite USB ASIO 열기 실패: " + error,
+            juce::dontSendNotification);
+   #endif
 }
 
 void MainComponent::configureLowLatencyAudio()
@@ -656,13 +1090,240 @@ void MainComponent::stopMode1Performance()
     grabKeyboardFocus();
 }
 
+juce::String MainComponent::getPerformanceRecordingSongSlug() const
+{
+    auto slug = currentSongPackageFile.getParentDirectory().getFileName()
+        .retainCharacters(
+            "abcdefghijklmnopqrstuvwxyz"
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-");
+    return slug.isNotEmpty() ? slug : "mode1";
+}
+
 juce::File MainComponent::getGuitarTestRecordingFile() const
 {
     return findRepositoryRoot()
         .getChildFile("output")
         .getChildFile("audio")
         .getChildFile("guitar_tests")
-        .getChildFile("bansanka_last_guitar_take.wav");
+        .getChildFile(
+            getPerformanceRecordingSongSlug()
+                + "_last_guitar_take.wav");
+}
+
+juce::File MainComponent::getPerformanceOutputRecordingFile() const
+{
+    return findRepositoryRoot()
+        .getChildFile("output")
+        .getChildFile("audio")
+        .getChildFile("guitar_tests")
+        .getChildFile(
+            "mode1_" + getPerformanceRecordingSongSlug()
+                + "_last_vocal_output.wav");
+}
+
+juce::File MainComponent::getPerformanceMixRecordingFile() const
+{
+    return findRepositoryRoot()
+        .getChildFile("output")
+        .getChildFile("audio")
+        .getChildFile("guitar_tests")
+        .getChildFile(
+            "mode1_" + getPerformanceRecordingSongSlug()
+                + "_last_guitar_and_vocal_mix.wav");
+}
+
+juce::File MainComponent::getPerformanceTraceFile() const
+{
+    return getPerformanceMixRecordingFile()
+        .getSiblingFile("mode1_last_realtime_trace.csv");
+}
+
+juce::File MainComponent::getPerformanceSessionFile() const
+{
+    return getPerformanceMixRecordingFile()
+        .getSiblingFile("mode1_last_session.json");
+}
+
+juce::Result MainComponent::savePerformanceDiagnostics()
+{
+    juce::StringArray rows;
+    rows.add(
+        "type,sample,time_sec,related_sample,related_time_sec,"
+        "delta_ms,index,value,flags,value2");
+    mode1::RealtimeTraceEvent event;
+    while (mode1Controller.popRealtimeTraceEvent(event))
+    {
+        rows.add(
+            juce::String(realtimeTraceTypeName(event.type))
+            + "," + juce::String(event.sample)
+            + "," + juce::String(event.sample / currentSampleRate, 9)
+            + "," + juce::String(event.relatedSample)
+            + "," + juce::String(
+                event.relatedSample / currentSampleRate, 9)
+            + "," + juce::String(
+                (event.relatedSample - event.sample)
+                    * 1000.0 / currentSampleRate,
+                6)
+            + "," + juce::String(event.index)
+            + "," + juce::String(event.value, 6)
+            + "," + juce::String(event.flags)
+            + "," + juce::String(event.value2, 6));
+    }
+    const auto traceFile = getPerformanceTraceFile();
+    if (!traceFile.replaceWithText(
+            rows.joinIntoString("\n") + "\n",
+            false,
+            false,
+            "\n"))
+        return juce::Result::fail("Could not save realtime trace.");
+
+    auto* root = new juce::DynamicObject();
+    root->setProperty("schema_version", 1);
+    root->setProperty(
+        "recorded_at",
+        juce::Time::getCurrentTime().toISO8601(true));
+    root->setProperty(
+        "song_package",
+        currentSongPackageFile.getFullPathName());
+    root->setProperty(
+        "song_package_size",
+        static_cast<juce::int64>(currentSongPackageFile.getSize()));
+    root->setProperty(
+        "song_package_modified_ms",
+        static_cast<juce::int64>(
+            currentSongPackageFile.getLastModificationTime()
+                .toMilliseconds()));
+    root->setProperty("sample_rate", currentSampleRate);
+    int blockSize = 0;
+    juce::String deviceName;
+    if (auto* device = deviceManager.getCurrentAudioDevice())
+    {
+        blockSize = device->getCurrentBufferSizeSamples();
+        deviceName = device->getName();
+    }
+    root->setProperty("block_size", blockSize);
+    root->setProperty("audio_device", deviceName);
+    root->setProperty(
+        "follower_mode_id",
+        followerModeSelector.getSelectedId());
+    root->setProperty(
+        "pause_on_chord_mismatch",
+        pauseOnWrongChordToggle.getToggleState());
+    root->setProperty(
+        "follow_performance_tempo",
+        followPerformanceTempoToggle.getToggleState());
+    root->setProperty(
+        "expression_strength",
+        mode1Controller.getExpressionStrength());
+    root->setProperty(
+        "manual_key_shift",
+        mode1Controller.getManualKeyShift());
+    root->setProperty(
+        "selected_key_anchor",
+        mode1Controller.getSelectedKeyAnchor());
+    root->setProperty(
+        "measured_latency_applied",
+        measuredLatencyApplied.load());
+    const double inputLatencySeconds =
+        measuredLatencyApplied.load()
+            ? effectiveInputLatencySeconds.load()
+            : reportedInputLatencySamples / currentSampleRate;
+    const double outputLatencySeconds =
+        measuredLatencyApplied.load()
+            ? effectiveOutputLatencySeconds.load()
+            : reportedOutputLatencySamples / currentSampleRate;
+    root->setProperty(
+        "input_latency_ms", inputLatencySeconds * 1000.0);
+    root->setProperty(
+        "output_latency_ms", outputLatencySeconds * 1000.0);
+    root->setProperty(
+        "trace_dropped_events",
+        static_cast<juce::int64>(
+            mode1Controller.getDroppedRealtimeTraceCount()));
+    root->setProperty(
+        "guitar_wav",
+        getGuitarTestRecordingFile().getFullPathName());
+    root->setProperty(
+        "vocal_wav",
+        getPerformanceOutputRecordingFile().getFullPathName());
+    root->setProperty(
+        "mix_wav",
+        getPerformanceMixRecordingFile().getFullPathName());
+    root->setProperty("trace_csv", traceFile.getFullPathName());
+    if (!getPerformanceSessionFile().replaceWithText(
+            juce::JSON::toString(juce::var(root), true),
+            false,
+            false,
+            "\n"))
+        return juce::Result::fail("Could not save performance session.");
+    return juce::Result::ok();
+}
+
+juce::Result MainComponent::createPerformanceMix(
+    const juce::File& guitarFile,
+    const juce::File& vocalFile,
+    const juce::File& destination) const
+{
+    juce::AudioFormatManager formats;
+    formats.registerBasicFormats();
+    std::unique_ptr<juce::AudioFormatReader> guitarReader(
+        formats.createReaderFor(guitarFile));
+    std::unique_ptr<juce::AudioFormatReader> vocalReader(
+        formats.createReaderFor(vocalFile));
+    if (guitarReader == nullptr || vocalReader == nullptr)
+        return juce::Result::fail(L"기타 또는 보컬 WAV를 읽을 수 없습니다.");
+    if (std::abs(guitarReader->sampleRate - vocalReader->sampleRate) > 1.0)
+        return juce::Result::fail(L"기타와 보컬 WAV의 샘플레이트가 다릅니다.");
+
+    const int numSamples = static_cast<int>(std::max(
+        guitarReader->lengthInSamples, vocalReader->lengthInSamples));
+    if (numSamples <= 0)
+        return juce::Result::fail(L"합칠 오디오가 없습니다.");
+
+    juce::AudioBuffer<float> guitar(1, numSamples);
+    juce::AudioBuffer<float> vocal(1, numSamples);
+    guitar.clear();
+    vocal.clear();
+    guitarReader->read(
+        &guitar, 0, numSamples, 0, true, false);
+    vocalReader->read(
+        &vocal, 0, numSamples, 0, true, false);
+
+    const float guitarPeak = guitar.getMagnitude(0, 0, numSamples);
+    const float vocalPeak = vocal.getMagnitude(0, 0, numSamples);
+    const float guitarGain = guitarPeak > 1.0e-5f
+        ? juce::jmin(8.0f, 0.58f / guitarPeak)
+        : 1.0f;
+    const float vocalGain = vocalPeak > 1.0e-5f
+        ? juce::jmin(8.0f, 0.72f / vocalPeak)
+        : 1.0f;
+    juce::AudioBuffer<float> mix(2, numSamples);
+    for (int sample = 0; sample < numSamples; ++sample)
+    {
+        const float mixed = std::tanh(
+            guitar.getSample(0, sample) * guitarGain
+            + vocal.getSample(0, sample) * vocalGain);
+        mix.setSample(0, sample, mixed);
+        mix.setSample(1, sample, mixed);
+    }
+
+    if (destination.existsAsFile() && !destination.deleteFile())
+        return juce::Result::fail(L"기존 믹스 WAV를 덮어쓸 수 없습니다.");
+    std::unique_ptr<juce::OutputStream> stream =
+        destination.createOutputStream();
+    if (stream == nullptr)
+        return juce::Result::fail(L"믹스 WAV를 만들 수 없습니다.");
+
+    juce::WavAudioFormat wav;
+    const auto options = juce::AudioFormatWriterOptions()
+        .withSampleRate(guitarReader->sampleRate)
+        .withNumChannels(2)
+        .withBitsPerSample(24);
+    auto writer = wav.createWriterFor(stream, options);
+    if (writer == nullptr
+        || !writer->writeFromAudioSampleBuffer(mix, 0, numSamples))
+        return juce::Result::fail(L"믹스 WAV 저장에 실패했습니다.");
+    return juce::Result::ok();
 }
 
 void MainComponent::refreshGuitarTestControls()
@@ -689,17 +1350,40 @@ void MainComponent::startGuitarTestRecording()
         || guitarTestRecorder.isRecording())
         return;
 
+    bool guitarRecorderStarted = false;
+    bool outputRecorderStarted = false;
     {
+        // All three timelines must begin at the same audio callback.
         const juce::ScopedLock callbackLock(
             deviceManager.getAudioCallbackLock());
         guitarReplayActive.store(false);
         guitarReplayFinished.store(false);
-        mode1Controller.restartPerformance();
+        guitarRecorderStarted = guitarTestRecorder.start();
+        if (guitarRecorderStarted)
+            outputRecorderStarted = performanceOutputRecorder.start();
+        if (guitarRecorderStarted && outputRecorderStarted)
+        {
+            mode1Controller.setRealtimeTraceEnabled(true);
+            mode1Controller.restartPerformance();
+        }
+        else
+        {
+            guitarTestRecorder.stop();
+            performanceOutputRecorder.stop();
+            mode1Controller.setRealtimeTraceEnabled(false);
+        }
     }
-    if (!guitarTestRecorder.start())
+    if (!guitarRecorderStarted)
     {
         statusLabel.setText(
             L"기타 테스트 녹음을 시작하지 못했습니다.",
+            juce::dontSendNotification);
+        return;
+    }
+    if (!outputRecorderStarted)
+    {
+        statusLabel.setText(
+            L"보컬 출력 녹음을 시작하지 못했습니다.",
             juce::dontSendNotification);
         return;
     }
@@ -711,7 +1395,7 @@ void MainComponent::startGuitarTestRecording()
         L"기타 입력 녹음 중 · 악보 처음부터 연주하세요",
         juce::dontSendNotification);
     statusLabel.setText(
-        L"기타 입력 녹음 중: Input "
+        L"기타 입력과 보컬 출력 동시 녹음 중: Input "
             + juce::String(guitarChannelIndex.load() + 1),
         juce::dontSendNotification);
     refreshTransportControls();
@@ -723,7 +1407,13 @@ void MainComponent::stopGuitarTestRecording()
     if (!guitarTestRecorder.isRecording())
         return;
 
-    guitarTestRecorder.stop();
+    {
+        const juce::ScopedLock callbackLock(
+            deviceManager.getAudioCallbackLock());
+        guitarTestRecorder.stop();
+        performanceOutputRecorder.stop();
+        mode1Controller.setRealtimeTraceEnabled(false);
+    }
     const auto destination = getGuitarTestRecordingFile();
     if (destination.getParentDirectory().createDirectory().failed())
     {
@@ -745,11 +1435,48 @@ void MainComponent::stopGuitarTestRecording()
         return;
     }
 
+    const auto outputDestination = getPerformanceOutputRecordingFile();
+    const auto outputResult =
+        performanceOutputRecorder.saveAsWav(outputDestination, false);
+    if (outputResult.failed())
+    {
+        statusLabel.setText(
+            L"기타 WAV는 저장했지만 보컬 출력 저장 실패: "
+                + outputResult.getErrorMessage(),
+            juce::dontSendNotification);
+        refreshGuitarTestControls();
+        return;
+    }
+
     lastGuitarTestRecording = destination;
+    lastPerformanceOutputRecording = outputDestination;
+    const auto mixDestination = getPerformanceMixRecordingFile();
+    const auto mixResult = createPerformanceMix(
+        destination, outputDestination, mixDestination);
+    if (mixResult.failed())
+    {
+        statusLabel.setText(
+            L"기타와 보컬은 저장했지만 합본 생성 실패: "
+                + mixResult.getErrorMessage(),
+            juce::dontSendNotification);
+        refreshGuitarTestControls();
+        return;
+    }
+    const auto diagnosticsResult = savePerformanceDiagnostics();
+    if (diagnosticsResult.failed())
+    {
+        statusLabel.setText(
+            L"Performance WAV saved, but diagnostics failed: "
+                + diagnosticsResult.getErrorMessage(),
+            juce::dontSendNotification);
+        refreshGuitarTestControls();
+        return;
+    }
     const bool loaded = loadGuitarTestReplay(destination);
     statusLabel.setText(
         loaded
-            ? L"기타 입력 저장 완료: " + destination.getFullPathName()
+            ? L"기타+보컬 합본 저장 완료: "
+                + mixDestination.getFullPathName()
             : L"WAV는 저장했지만 테스트 재생용 로드에 실패했습니다.",
         juce::dontSendNotification);
     lyricLabel.setText(
@@ -950,6 +1677,7 @@ bool MainComponent::loadSongPackage(const juce::File& file)
         nextPhraseButton.setEnabled(false);
         return false;
     }
+    currentSongPackageFile = file;
     mode1Controller.stopPerformance();
     automaticPlaybackButton.setToggleState(
         false, juce::dontSendNotification);
@@ -980,6 +1708,15 @@ bool MainComponent::loadSongPackage(const juce::File& file)
                 ? L"  [주의] " + mode1Controller.getRangeWarning()
                 : L""),
         juce::dontSendNotification);
+    const auto packageDirectory = file.getParentDirectory().getFileName();
+    if (packageDirectory == "bansanka")
+        songSelector.setSelectedId(1, juce::dontSendNotification);
+    else if (packageDirectory == "dont_look_back_in_anger")
+        songSelector.setSelectedId(2, juce::dontSendNotification);
+    else if (packageDirectory == "hype_boy")
+        songSelector.setSelectedId(3, juce::dontSendNotification);
+    else
+        songSelector.setSelectedId(0, juce::dontSendNotification);
     lyricLabel.setText(
         L"시작 버튼을 누른 뒤 악보 첫 코드부터 연주하세요",
         juce::dontSendNotification);
@@ -994,7 +1731,16 @@ bool MainComponent::loadSongPackage(const juce::File& file)
 
 juce::File MainComponent::findDevelopmentSongPackage() const
 {
-    const auto relativePath = juce::String("build/mode1/bansanka/song_package.json");
+    return findBundledSongPackage("bansanka");
+}
+
+juce::File MainComponent::findBundledSongPackage(
+    const juce::String& songSlug) const
+{
+    const auto relativePath =
+        juce::String("build/mode1/")
+        + songSlug
+        + "/song_package.json";
     const auto fromWorkingDirectory =
         juce::File::getCurrentWorkingDirectory().getChildFile(relativePath);
     if (fromWorkingDirectory.existsAsFile())
@@ -1006,7 +1752,10 @@ juce::File MainComponent::findDevelopmentSongPackage() const
     for (int level = 0; level < 5; ++level)
     {
         const auto candidate = executableDirectory
-            .getChildFile("mode1/bansanka/song_package.json");
+            .getChildFile(
+                juce::String("mode1/")
+                + songSlug
+                + "/song_package.json");
         if (candidate.existsAsFile())
             return candidate;
         executableDirectory = executableDirectory.getParentDirectory();
@@ -1164,6 +1913,7 @@ void MainComponent::startGuidedRecordingSession()
     automaticPlaybackButton.setButtonText(L"자동 연주 시작");
     setVirtualControlsEnabled(false);
     guitarTestRecorder.stop();
+    performanceOutputRecorder.stop();
     guitarReplayActive.store(false);
     activeMode = ActiveMode::idle;
     refreshGuitarTestControls();
@@ -1349,6 +2099,40 @@ void MainComponent::writeManifestEntry(
 
 void MainComponent::timerCallback()
 {
+    if (audioLatencyCalibrator.isAnalysisPending())
+    {
+        lastLatencyResult =
+            audioLatencyCalibrator.analyseCompletedCapture();
+        hasLatencyResult = lastLatencyResult.valid;
+        if (auto* device = deviceManager.getCurrentAudioDevice())
+        {
+            reportedInputLatencySamples =
+                device->getInputLatencyInSamples();
+            reportedOutputLatencySamples =
+                device->getOutputLatencyInSamples();
+            latencyMeasurementDeviceName = device->getName();
+            latencyMeasurementSampleRate = currentSampleRate;
+            latencyMeasurementBufferSize =
+                device->getCurrentBufferSizeSamples();
+        }
+
+        measureLatencyButton.setEnabled(true);
+        applyLatencyButton.setEnabled(hasLatencyResult);
+        if (hasLatencyResult)
+        {
+            refreshLatencyDisplay();
+        }
+        else
+        {
+            latencyStatusLabel.setColour(
+                juce::Label::textColourId, juce::Colours::orange);
+            latencyStatusLabel.setText(
+                lastLatencyResult.message,
+                juce::dontSendNotification);
+        }
+        refreshTransportControls();
+    }
+
     if (recordingSessionScreen.isVisible())
     {
         if (recordingPreflightActive)
@@ -1481,11 +2265,21 @@ void MainComponent::timerCallback()
             + juce::String(
                 mode1Controller.getPerformanceTempoScale(), 2)
             + (
+                mode1Controller.isFollowPerformanceTempoEnabled()
+                    ? L"  보컬 길이 x"
+                        + juce::String(
+                            mode1Controller.getVocalDurationScale(), 2)
+                    : juce::String())
+            + (
                 mode1Controller.getRecoveredSkippedChordCount() > 0
                     ? L"  재동기화 "
                         + juce::String(
                             mode1Controller
                                 .getRecoveredSkippedChordCount())
+                    : juce::String())
+            + (
+                mode1Controller.isPausedForChordMismatch()
+                    ? L"  [코드 오류 · 일시정지]"
                     : juce::String())
             + (mode1Controller.consumedOnset() ? "  [ONSET]" : ""),
         juce::dontSendNotification);
@@ -1511,7 +2305,13 @@ void MainComponent::resized()
     area.removeFromTop(14);
 
     auto songRow = area.removeFromTop(42);
-    loadSongButton.setBounds(songRow.removeFromLeft(260).reduced(4, 0));
+    songSelector.setBounds(
+        songRow.removeFromLeft(
+            juce::roundToInt(songRow.getWidth() * 0.42f)).reduced(4, 0));
+    followerModeSelector.setBounds(
+        songRow.removeFromLeft(
+            juce::roundToInt(songRow.getWidth() * 0.50f)).reduced(4, 0));
+    loadSongButton.setBounds(songRow.reduced(4, 0));
     area.removeFromTop(6);
 
     auto transportRow = area.removeFromTop(40);
@@ -1546,12 +2346,26 @@ void MainComponent::resized()
     guitarChannelSelector.setBounds(
         guitarRow.removeFromLeft(180).reduced(4, 0));
     guitarStatusLabel.setBounds(guitarRow.reduced(4, 0));
+    area.removeFromTop(5);
+
+    auto latencyButtonRow = area.removeFromTop(34);
+    measureLatencyButton.setBounds(
+        latencyButtonRow.removeFromLeft(150).reduced(4, 0));
+    applyLatencyButton.setBounds(
+        latencyButtonRow.removeFromLeft(145).reduced(4, 0));
+    resetLatencyButton.setBounds(
+        latencyButtonRow.removeFromLeft(130).reduced(4, 0));
+    latencyStatusLabel.setBounds(latencyButtonRow.reduced(4, 0));
     area.removeFromTop(7);
 
     auto virtualHeader = area.removeFromTop(32);
     virtualChordLabel.setBounds(
         virtualHeader.removeFromLeft(
-            virtualHeader.getWidth() - 190).reduced(4, 0));
+            std::max(120, virtualHeader.getWidth() - 630)).reduced(4, 0));
+    pauseOnWrongChordToggle.setBounds(
+        virtualHeader.removeFromLeft(220).reduced(4, 0));
+    followPerformanceTempoToggle.setBounds(
+        virtualHeader.removeFromLeft(220).reduced(4, 0));
     automaticPlaybackButton.setBounds(
         virtualHeader.reduced(4, 0));
     area.removeFromTop(4);

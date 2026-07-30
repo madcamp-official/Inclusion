@@ -57,7 +57,11 @@ def chroma_features(y: np.ndarray, sr: int) -> np.ndarray:
         hop_length=HOP_LENGTH,
     )
     onset /= max(float(np.max(onset)), 1e-8)
-    return np.vstack([chroma, onset[np.newaxis, :] * 0.25])
+    features = np.vstack([chroma, onset[np.newaxis, :] * 0.25])
+    # Cosine distance is undefined for all-zero columns.  Real vocal scores
+    # commonly contain long rests, so keep silent frames numerically non-zero
+    # without giving them a meaningful pitch preference.
+    return np.nan_to_num(features, copy=False) + 1.0e-8
 
 
 def build_time_map(
@@ -277,14 +281,17 @@ def build_package(args: argparse.Namespace) -> Path:
     )
     converted_audio, converted_sr = sf.read(args.converted_vocal_wav, always_2d=False)
 
-    chord_events = clean_chord_events([
-        {
-            "start_sec": float(event["start_sec"]),
-            "raw_chord": event["chord"],
-            "chord": normalize_chord_name(event["chord"]),
-        }
-        for event in chords_json["chords"]
-    ])
+    chord_events = clean_chord_events(
+        [
+            {
+                "start_sec": float(event["start_sec"]),
+                "raw_chord": event["chord"],
+                "chord": normalize_chord_name(event["chord"]),
+            }
+            for event in chords_json["chords"]
+        ],
+        preserve_repeated_chords=args.preserve_repeated_chords,
+    )
     for event in chord_events:
         event["original_chord"] = event["chord"]
         event["chord"] = transpose_chord_name(event["chord"], base_key_shift)
@@ -326,8 +333,16 @@ def build_package(args: argparse.Namespace) -> Path:
                 "line_idx": int(line["line_idx"]),
                 "lyrics": line["text"],
                 "score": {
-                    "start_sec": float(line["start_sec"]),
-                    "end_sec": float(line["end_sec"]),
+                    "start_sec": (
+                        round(source_start, 6)
+                        if args.source_clock
+                        else float(line["start_sec"])
+                    ),
+                    "end_sec": (
+                        round(source_end, 6)
+                        if args.source_clock
+                        else float(line["end_sec"])
+                    ),
                 },
                 "source": {
                     "start_sec": round(source_start, 6),
@@ -364,6 +379,42 @@ def build_package(args: argparse.Namespace) -> Path:
             source_end = max(source_start + 0.05, source_end)
             previous_micro_end = source_end
 
+            if (
+                args.minimum_source_phrase_gap > 0.0
+                and micro_phrases
+                and source_start
+                    - float(micro_phrases[-1]["source"]["start_sec"])
+                    < args.minimum_source_phrase_gap
+            ):
+                previous = micro_phrases[-1]
+                previous["lyrics"] += span["lyrics"]
+                previous["notes"].extend(span["notes"])
+                previous["score"]["end_sec"] = (
+                    round(source_end, 6)
+                    if args.source_clock
+                    else float(span["end_sec"])
+                )
+                previous["source"]["end_sec"] = round(source_end, 6)
+                previous["chords"] = chords_for_span(
+                    chord_events,
+                    float(previous["source"]["start_sec"]),
+                    source_end,
+                )
+                previous_file = (
+                    micro_phrase_dir / previous["vocal"]["file"]
+                )
+                merged_metadata = cut_phrase(
+                    converted_audio,
+                    converted_sr,
+                    float(previous["source"]["start_sec"]),
+                    source_end,
+                    previous_file,
+                    args.micro_margin_sec,
+                )
+                merged_metadata["directory"] = "micro_vocals"
+                previous["vocal"] = merged_metadata
+                continue
+
             micro_chords = chords_for_span(
                 chord_events,
                 source_start,
@@ -385,8 +436,16 @@ def build_package(args: argparse.Namespace) -> Path:
                     "parent_line_idx": int(line["line_idx"]),
                     "lyrics": span["lyrics"],
                     "score": {
-                        "start_sec": float(span["start_sec"]),
-                        "end_sec": float(span["end_sec"]),
+                        "start_sec": (
+                            round(source_start, 6)
+                            if args.source_clock
+                            else float(span["start_sec"])
+                        ),
+                        "end_sec": (
+                            round(source_end, 6)
+                            if args.source_clock
+                            else float(span["end_sec"])
+                        ),
                     },
                     "source": {
                         "start_sec": round(source_start, 6),
@@ -414,11 +473,62 @@ def build_package(args: argparse.Namespace) -> Path:
         }
     )
 
+    if args.phrase_anchored_chords:
+        source_chord_events = chord_events
+        first_vocal_start = (
+            float(micro_phrases[0]["source"]["start_sec"])
+            if micro_phrases
+            else 0.0
+        )
+        # Phrase anchoring must not erase an instrumental intro. These events
+        # are valuable score observations that let the follower lock tempo and
+        # phase before the first lyric.
+        leading_events = [
+            dict(event)
+            for event in source_chord_events
+            if float(event["start_sec"]) < first_vocal_start - 1.0e-6
+        ]
+        anchored_events = leading_events
+        cursor = 0
+        active = source_chord_events[0] if source_chord_events else None
+        for phrase in micro_phrases:
+            phrase_start = float(phrase["source"]["start_sec"])
+            while (
+                cursor + 1 < len(source_chord_events)
+                and source_chord_events[cursor + 1]["start_sec"]
+                    <= phrase_start
+            ):
+                cursor += 1
+                active = source_chord_events[cursor]
+            if active is None:
+                continue
+            anchored_events.append(
+                {
+                    **active,
+                    "start_sec": round(phrase_start, 6),
+                }
+            )
+        chord_events = anchored_events
+        for phrase in phrases:
+            phrase["chords"] = chords_for_span(
+                chord_events,
+                float(phrase["source"]["start_sec"]),
+                float(phrase["source"]["end_sec"]),
+            )
+        for phrase in micro_phrases:
+            phrase["chords"] = chords_for_span(
+                chord_events,
+                float(phrase["source"]["start_sec"]),
+                float(phrase["source"]["end_sec"]),
+            )
+
     package = {
         "schema_version": 2,
         "song": score.get("song", args.output_dir.name),
         "score_track": score.get("track"),
-        "score_bpm": float(score["bpm"]),
+        "score_bpm": float(
+            chords_json["bpm"] if args.source_clock else score["bpm"]
+        ),
         "chord_bpm": float(chords_json["bpm"]),
         "base_key_shift": base_key_shift,
         "vocal_style": style_plan,
@@ -437,6 +547,35 @@ def build_package(args: argparse.Namespace) -> Path:
         "phrases": phrases,
         "micro_phrases": micro_phrases,
     }
+    if micro_phrases:
+        first_vocal_start = float(micro_phrases[0]["source"]["start_sec"])
+        first_chord_start = (
+            float(chord_events[0]["start_sec"])
+            if chord_events
+            else first_vocal_start
+        )
+        if first_chord_start < first_vocal_start - 1.0e-6:
+            package["sections"] = [
+                {
+                    "id": "intro_1",
+                    "start_sec": round(first_chord_start, 6),
+                    "end_sec": round(first_vocal_start, 6),
+                    "type": "instrumental_intro",
+                    "vocal_allowed": False,
+                    "clock_policy": "lock_from_guitar",
+                    "entry_policy": "predict_first_vowel",
+                },
+                {
+                    "id": "vocal_1",
+                    "start_sec": round(first_vocal_start, 6),
+                    "end_sec": round(
+                        float(micro_phrases[-1]["source"]["end_sec"]),
+                        6,
+                    ),
+                    "type": "vocal",
+                    "vocal_allowed": True,
+                },
+            ]
     output_path = output_dir / "song_package.json"
     output_path.write_text(
         json.dumps(package, ensure_ascii=False, indent=2),
@@ -454,8 +593,43 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--converted-vocal-wav", type=Path, required=True)
     parser.add_argument("--style-plan-json", type=Path)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument(
+        "--source-clock",
+        action="store_true",
+        help=(
+            "Write phrase score times on the source-audio clock. Use this "
+            "when a vocal-only score omits the song intro or instrumental "
+            "sections while the chord timeline follows the full recording."
+        ),
+    )
+    parser.add_argument(
+        "--preserve-repeated-chords",
+        action="store_true",
+        help=(
+            "Keep consecutive score events with the same chord name. This "
+            "is useful when repeated strums, rather than harmony changes, "
+            "drive the vocal follower."
+        ),
+    )
+    parser.add_argument(
+        "--phrase-anchored-chords",
+        action="store_true",
+        help=(
+            "Create one repeated chord event at every micro-phrase start, "
+            "so one guitar stroke advances exactly one vocal segment."
+        ),
+    )
     parser.add_argument("--margin-sec", type=float, default=0.12)
     parser.add_argument("--micro-margin-sec", type=float, default=0.08)
+    parser.add_argument(
+        "--minimum-source-phrase-gap",
+        type=float,
+        default=0.0,
+        help=(
+            "Merge mapped micro-phrases whose source-audio start times are "
+            "closer than this many seconds after DTW."
+        ),
+    )
     # Micro-phrase segmentation granularity. Score notes are already about
     # one mora each, so 0/0 gives one micro-phrase per mora; the defaults
     # group them into ~0.55-1.2 s spans instead.

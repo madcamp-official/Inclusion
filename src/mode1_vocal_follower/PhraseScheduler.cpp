@@ -109,6 +109,34 @@ void PhraseScheduler::reset() noexcept
     clearTimingAnchors();
     acceptedTimingAnchorCount = 0;
     rejectedTimingAnchorCount = 0;
+    stablePredictionAnchorCount = 0;
+    lastTimingPredictionResidualSeconds = 0.0;
+    scheduledPhraseDelaySeconds = 0.0;
+    earlyBoundaryCandidateSeconds = -1.0;
+    learnedArpeggioPhaseLeadSeconds = 0.0;
+    arpeggioPhaseObservationCount = 0;
+    activeVocalLeadEnabledForBlock = false;
+    lastPhraseStartUsedLeadTiming = false;
+}
+
+double PhraseScheduler::activeVocalLeadSecondsForPhrase(
+    int phraseIndex) const noexcept
+{
+    if (!activeVocalLeadEnabledForBlock
+        || song == nullptr
+        || phraseIndex < 0
+        || phraseIndex >= static_cast<int>(song->getPhrases().size()))
+        return 0.0;
+    const double contentOffset = juce::jlimit(
+        0.0,
+        activeVocalLeadCapSeconds,
+        song->getPhrases()[static_cast<size_t>(
+            phraseIndex)].contentOffsetSeconds);
+    const double firstVocalIntroLead =
+        phraseIndex == 0 ? firstVocalIntroAnticipationSeconds : 0.0;
+    return activeMusicalAnticipationSeconds
+        + contentOffset
+        + firstVocalIntroLead;
 }
 
 double PhraseScheduler::normalizedScoreStartTime(int phraseIndex) const noexcept
@@ -313,6 +341,7 @@ bool PhraseScheduler::recordTimingAnchor(
         // segment rather than interpreting the pause as a bad chord or
         // letting it permanently skew the song-wide tempo.
         clearTimingAnchors();
+        stablePredictionAnchorCount = 0;
     }
 
     if (timingAnchorCount > 0)
@@ -324,6 +353,7 @@ bool PhraseScheduler::recordTimingAnchor(
             || boundaryPerformanceSeconds <= last.performanceSeconds)
         {
             ++rejectedTimingAnchorCount;
+            stablePredictionAnchorCount = 0;
             return false;
         }
 
@@ -346,8 +376,18 @@ bool PhraseScheduler::recordTimingAnchor(
             || std::abs(residual) > 0.40)
         {
             ++rejectedTimingAnchorCount;
+            stablePredictionAnchorCount = 0;
             return false;
         }
+        lastTimingPredictionResidualSeconds = residual;
+        // Real guitar takes contain pick/arpeggio subdivisions. Two locally
+        // consistent printed-boundary observations within 140 ms are enough
+        // to arm a bounded 120 ms reservation; an early-arrival onset can
+        // still release that reservation immediately.
+        if (std::abs(residual) <= 0.140)
+            ++stablePredictionAnchorCount;
+        else
+            stablePredictionAnchorCount = 0;
     }
 
     if (timingAnchorCount == maximumTimingAnchors)
@@ -378,9 +418,6 @@ int PhraseScheduler::chooseChordEventForOnset(
         static_cast<size_t>(currentChordEventIndex)].startSeconds;
     const double beatRealSeconds =
         scoreBeatSeconds() / std::max(0.65, tempoScale);
-    // A generous early window mistakes subdivision strums for the next score
-    // event. Keep this below roughly one third of a beat; actual tempo drift
-    // is handled by the multi-beat tempo estimate instead.
     const double earlyTolerance = juce::jlimit(
         0.10,
         0.18,
@@ -426,7 +463,53 @@ int PhraseScheduler::chooseChordEventForOnset(
             candidate = nextPlayableChordEvent(candidate);
         }
         if (bestIndex < 0)
+        {
+            if (predictionEnabledForBlock)
+            {
+                const double nextExpectedFromOrigin =
+                    (timeline[static_cast<size_t>(
+                        nextChordEventIndex)].startSeconds
+                        - timeline[static_cast<size_t>(
+                            performanceOriginEventIndex)].startSeconds)
+                    / juce::jlimit(0.80, 1.25, tempoScale);
+                const double earlyBy =
+                    nextExpectedFromOrigin - performedFromOrigin;
+                if (earlyBy >= 0.15 && earlyBy <= 0.32)
+                    earlyBoundaryCandidateSeconds = performanceTimeSeconds;
+            }
             return -1;
+        }
+        if (bestIndex == nextChordEventIndex
+            && earlyBoundaryCandidateSeconds >= 0.0)
+        {
+            const double subdivision =
+                performanceTimeSeconds - earlyBoundaryCandidateSeconds;
+            if (subdivision >= 0.15 && subdivision <= 0.32)
+            {
+                learnedArpeggioPhaseLeadSeconds =
+                    arpeggioPhaseObservationCount == 0
+                        ? subdivision
+                        : 0.75 * learnedArpeggioPhaseLeadSeconds
+                            + 0.25 * subdivision;
+                ++arpeggioPhaseObservationCount;
+            }
+            earlyBoundaryCandidateSeconds = -1.0;
+        }
+        // A long written interval is an intentional rest. Guitar sustain can
+        // keep the activity detector high across it, but the first stroke
+        // after the rest must still select the immediately following score
+        // event rather than "recovering" past a lyric.
+        if (nextScoreDelta >= scoreBeatSeconds() * 2.0)
+            bestIndex = nextChordEventIndex;
+        if (
+            bestIndex != nextChordEventIndex
+            && nextPhraseIndex
+                < static_cast<int>(song->getPhrases().size())
+            && song->getPhrases()[static_cast<size_t>(
+                nextPhraseIndex)].anchorChordEventIndex
+                == nextChordEventIndex
+        )
+            bestIndex = nextChordEventIndex;
         if (bestIndex != nextChordEventIndex)
         {
             const double activityRatio = activeSecondsSinceChordMatch
@@ -616,6 +699,16 @@ void PhraseScheduler::applyChordEvidence(
         return;
 
     const auto& timeline = song->getChordTimeline();
+    const auto& phrases = song->getPhrases();
+    // In trusted score order, chord evidence remains diagnostic only. The
+    // legal recognition vocabulary is the nearby package timeline, and it
+    // cannot jump over a phrase that has not received its own guitar attack.
+    if (nextPhraseIndex < static_cast<int>(phrases.size())
+        && phrases[static_cast<size_t>(
+            nextPhraseIndex)].anchorChordEventIndex
+            == nextPlayableChordEvent(currentChordEventIndex))
+        return;
+
     const auto& currentChord =
         timeline[static_cast<size_t>(currentChordEventIndex)].chord;
     if (notePitchClass(currentChord) == evidence.rootPitchClass)
@@ -833,17 +926,136 @@ int PhraseScheduler::startDueGuitarPhrase() noexcept
         phrases[static_cast<size_t>(nextPhraseIndex)];
     if (nextPhrase.anchorChordEventIndex < 0)
         return -1;
+    bool predictsNextBoundary = false;
     if (nextPhrase.anchorChordEventIndex > currentChordEventIndex)
-        return -1;
+    {
+        // Tried and reverted: trusting a tempo estimate for an anchor
+        // several chord events ahead (not just the immediate next one),
+        // gated by anchorDistanceSeconds and inactiveTailSeconds. Measured
+        // regression on the last-guitar-take Active render: a prediction
+        // committed just before the take's real pause (established tempo,
+        // several beats of trusted distance, guitar still active at the
+        // moment of commit) stayed committed through the whole silence, and
+        // the onset that resumed play afterwards matched a much later
+        // confirmed chord, expiring 4 phrases in one batch. Neither gate
+        // helped, because the pause itself starts after the commit decision
+        // -- it can't be seen coming. This is the same failure mode as the
+        // early-tolerance-expansion attempt this plan already bans, just
+        // reached from the distance side instead of the phase side, so it
+        // stays reverted to the original one-event restriction rather than
+        // shipping unverified.
+        double nextBoundaryDistanceSeconds =
+            std::numeric_limits<double>::infinity();
+        if (currentChordEventIndex >= 0 && nextChordEventIndex >= 0)
+        {
+            const auto& timeline = song->getChordTimeline();
+            nextBoundaryDistanceSeconds =
+                timeline[static_cast<size_t>(
+                    nextChordEventIndex)].startSeconds
+                - timeline[static_cast<size_t>(
+                    currentChordEventIndex)].startSeconds;
+        }
+        const bool stableFirstVocalAfterIntro =
+            nextPhraseIndex == 0
+            && currentChordEventIndex >= 0
+            && nextPhrase.anchorChordEventIndex == nextChordEventIndex
+            && nextBoundaryDistanceSeconds
+                <= 4.0 * scoreBeatSeconds();
+        predictsNextBoundary =
+            predictionEnabledForBlock
+            && hasReliableTimingSlope()
+            && stablePredictionAnchorCount >= 2
+            && nextChordEventIndex >= 0
+            && (
+                nextBoundaryDistanceSeconds
+                    <= 2.0 * scoreBeatSeconds()
+                || stableFirstVocalAfterIntro)
+            && nextPhrase.anchorChordEventIndex == nextChordEventIndex;
+        if (!predictsNextBoundary)
+            return -1;
+    }
 
     // Map every immutable source target from absolute causal anchors. A
     // song-wide tempo estimate still guides score-position selection, but it
     // no longer decides the local in-chord vocal target by itself.
-    const double targetPerformanceSeconds =
+    const double vocalAnchorLeadSeconds =
+        nextPhrase.vowelOnsetOffsetSeconds >= 0.0
+            ? nextPhrase.vowelOnsetOffsetSeconds
+            : nextPhrase.vocalAnchorConfidence >= 0.35
+                ? nextPhrase.audibleOnsetOffsetSeconds
+                : 0.0;
+    const double learnedPhaseLeadSeconds =
+        arpeggioPhaseObservationCount >= 2
+            ? juce::jlimit(
+                0.0, 0.25, learnedArpeggioPhaseLeadSeconds)
+            : 0.0;
+    const double activeLeadSeconds =
+        activeVocalLeadSecondsForPhrase(nextPhraseIndex);
+    double targetPerformanceSeconds =
         mapScoreTimeToPerformanceSeconds(nextPhrase.sourceStartSeconds)
-        - guitarVocalLeadSeconds;
-    if (performanceTimeSeconds < targetPerformanceSeconds)
+        - guitarVocalLeadSeconds
+        - vocalAnchorLeadSeconds
+        - learnedPhaseLeadSeconds
+        - activeLeadSeconds;
+    if (predictsNextBoundary && currentChordEventIndex >= 0)
+    {
+        const auto& timeline = song->getChordTimeline();
+        const double currentScoreSeconds = timeline[
+            static_cast<size_t>(currentChordEventIndex)].startSeconds;
+        // Project straight to this phrase's own anchor rather than to
+        // nextChordEventIndex: the two no longer have to be the same event,
+        // and chordRelativeStartSeconds is measured from the phrase's own
+        // anchor in either case.
+        const double anchorScoreSeconds = timeline[static_cast<size_t>(
+            nextPhrase.anchorChordEventIndex)].startSeconds;
+        const double localBoundaryPrediction =
+            currentChordPerformanceStartSeconds
+            + (anchorScoreSeconds - currentScoreSeconds)
+                / juce::jlimit(0.80, 1.25, tempoScale);
+        const double localPhrasePrediction =
+            localBoundaryPrediction
+            + nextPhrase.chordRelativeStartSeconds
+                / juce::jlimit(0.80, 1.25, tempoScale)
+            - guitarVocalLeadSeconds
+            - vocalAnchorLeadSeconds
+            - learnedPhaseLeadSeconds
+            - activeLeadSeconds;
+        targetPerformanceSeconds = std::max(
+            targetPerformanceSeconds,
+            localPhrasePrediction);
+    }
+    // A phrase explicitly anchored at the current printed chord boundary
+    // must start from that stroke. A rejected tempo observation must not
+    // postpone it until after the next chord, where it would be expired.
+    const bool startsAtCurrentBoundary =
+        nextPhrase.anchorChordEventIndex == currentChordEventIndex
+        && nextPhrase.chordRelativeStartSeconds <= 0.025;
+    if (predictsNextBoundary)
+    {
+        // Commit the phrase while there is still enough time to place it on
+        // the exact output sample.  The PhrasePlayer holds this request until
+        // targetPerformanceSeconds; look-ahead must never mean "play now".
+        // activeLeadSeconds shifted the target itself earlier, so the same
+        // confidence-gated horizon is measured from that adjusted target
+        // rather than shrinking the effective lookahead budget.
+        if (performanceTimeSeconds + predictiveLookaheadSeconds
+                + activeLeadSeconds
+            < targetPerformanceSeconds)
+            return -1;
+    }
+    else if (!startsAtCurrentBoundary
+        && performanceTimeSeconds < targetPerformanceSeconds)
+    {
         return -1;
+    }
+    // startsAtCurrentBoundary fires the instant this phrase is next in line,
+    // with no target-time gating at all -- including on a callback where the
+    // confirming onset landed just now, before activeLeadSeconds had any
+    // chance to move the real trigger moment earlier. Asking PhrasePlayer to
+    // start further back in the clip here would only delay the vowel by the
+    // pad length. Every other path down here genuinely waited for (or was
+    // scheduled against) the adjusted target, so lead-in is safe there.
+    lastPhraseStartUsedLeadTiming = !startsAtCurrentBoundary;
 
     // If timing jumped forward at a chord boundary, never burst through a
     // backlog of mora clips. The chord anchor above expires older segments;
@@ -875,6 +1087,9 @@ int PhraseScheduler::startDueGuitarPhrase() noexcept
     pendingDuePhraseIndex = -1;
     lastStartedPhraseIndex = phraseToStart;
     lastPhraseTriggerPerformanceSeconds = performanceTimeSeconds;
+    scheduledPhraseDelaySeconds = predictsNextBoundary
+        ? std::max(0.0, targetPerformanceSeconds - performanceTimeSeconds)
+        : 0.0;
     return phraseToStart;
 }
 
@@ -916,6 +1131,10 @@ int PhraseScheduler::startBoundaryGracePhrase() noexcept
     pendingDuePhraseIndex = -1;
     lastStartedPhraseIndex = phraseToStart;
     lastPhraseTriggerPerformanceSeconds = performanceTimeSeconds;
+    // This rescue exists precisely because a fresh boundary would otherwise
+    // expire the phrase this same callback -- there was no room to move its
+    // trigger earlier, so lead-in must stay off.
+    lastPhraseStartUsedLeadTiming = false;
     return phraseToStart;
 }
 
@@ -931,6 +1150,7 @@ int PhraseScheduler::startNextAutomaticPhrase() noexcept
         songTimeSeconds = normalizedScoreStartTime(phraseToStart);
         running = true;
     }
+    lastPhraseStartUsedLeadTiming = false;
     return phraseToStart;
 }
 
@@ -941,11 +1161,16 @@ int PhraseScheduler::processBlock(
     bool automaticPlayback,
     bool guitarActive,
     float onsetStrength,
-    const ChordEvidence* chordEvidence) noexcept
+    const ChordEvidence* chordEvidence,
+    bool predictNextBoundary,
+    double predictedScoreSeconds,
+    bool activeVocalLeadEnabled) noexcept
 {
     if (song == nullptr || !song->isLoaded())
         return -1;
 
+    scheduledPhraseDelaySeconds = 0.0;
+    activeVocalLeadEnabledForBlock = activeVocalLeadEnabled;
     if (automaticPlayback)
     {
         if (!running)
@@ -960,6 +1185,8 @@ int PhraseScheduler::processBlock(
     }
 
     const bool chordTrigger = guitarOnset || manualTrigger;
+    predictionEnabledForBlock = predictNextBoundary;
+    predictedScoreSecondsForBlock = predictedScoreSeconds;
     const bool hasTimeline = !song->getChordTimeline().empty();
 
     // Older packages without a global chord timeline retain a conservative
@@ -970,6 +1197,7 @@ int PhraseScheduler::processBlock(
             && nextPhraseIndex < static_cast<int>(song->getPhrases().size()))
         {
             running = true;
+            lastPhraseStartUsedLeadTiming = false;
             return nextPhraseIndex++;
         }
         return -1;
@@ -990,6 +1218,8 @@ int PhraseScheduler::processBlock(
         {
             inactiveTailSeconds += elapsed;
         }
+        if (predictionEnabledForBlock)
+            predictedScoreSecondsForBlock = songTimeSeconds;
     }
     int boundaryPhrase = -1;
     if (manualTrigger)

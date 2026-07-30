@@ -149,6 +149,14 @@ def select_key_shift(
     candidates.sort(key=lambda item: item["score"])
     return int(candidates[0]["shift"]), candidates[:5]
 
+def resolve_key_shift(
+    explicit_shift: int | None,
+    recommended_shift: int,
+) -> int:
+    """Keep RVC in the song's original key unless explicitly overridden."""
+    del recommended_shift  # Retained in reports as an advisory range warning.
+    return 0 if explicit_shift is None else int(explicit_shift)
+
 
 def voiced_segments(voiced: np.ndarray) -> list[tuple[int, int]]:
     edges = np.diff(np.pad(voiced.astype(np.int8), (1, 1)))
@@ -218,7 +226,14 @@ def main() -> None:
     parser.add_argument("--user-voice", type=Path, required=True)
     parser.add_argument("--source-vocal", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
-    parser.add_argument("--key-shift", type=int)
+    parser.add_argument(
+        "--key-shift",
+        type=int,
+        help=(
+            "Explicit RVC pitch shift in semitones. Defaults to 0 (the "
+            "source song's original key); range analysis is advisory only."
+        ),
+    )
     parser.add_argument(
         "--direct-rvc",
         action="store_true",
@@ -276,7 +291,7 @@ def main() -> None:
     recommended_shift, candidates = select_key_shift(
         user_pitch, source_pitch, candidate_shifts
     )
-    key_shift = args.key_shift if args.key_shift is not None else recommended_shift
+    key_shift = resolve_key_shift(args.key_shift, recommended_shift)
 
     source_rms = rms_curve(source_audio, source_sr, len(source_f0))
     source_db = librosa.amplitude_to_db(np.maximum(source_rms, 1e-7), ref=1.0)
@@ -331,7 +346,7 @@ def main() -> None:
             "recommended_base_key_shift": recommended_shift,
             "candidate_shifts": candidates,
             "pitch_processing": {
-                "mode": "direct_rvc_single_best_key",
+                "mode": "direct_rvc_original_key",
                 "rvc_pitch_shift": key_shift,
             },
             "energy_processing": {"mode": "disabled"},
@@ -354,7 +369,7 @@ def main() -> None:
                 "schema_version": 1,
                 "default_strength": strength,
                 "base_key_shift": key_shift,
-                "render_mode": "direct_rvc_single_best_key",
+                "render_mode": "direct_rvc_original_key",
                 "variants": variants,
             }, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",

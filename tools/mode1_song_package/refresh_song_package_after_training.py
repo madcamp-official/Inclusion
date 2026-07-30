@@ -1,9 +1,9 @@
-"""Render a trained RVC model into every Mode 1 voice bank and publish it.
+"""Render a trained RVC model in the original song key and publish it.
 
-The existing prepared RVC inputs are reused for the base key and every
-pre-rendered key anchor. Outputs are written to a model-specific directory.
-The live song_package.json is replaced only after every conversion, resample,
-slice, and reference validation succeeds.
+The default workflow always converts at 0 semitones. Range analysis remains
+available for warnings but never lowers the song automatically. The live
+song_package.json is replaced only after conversion, resampling, slicing, and
+reference validation all succeed.
 """
 
 from __future__ import annotations
@@ -146,11 +146,14 @@ def validate_package(package_path: Path) -> dict[str, int]:
     checked_default = 0
     checked_key = 0
     for collection_name in ("phrases", "micro_phrases"):
+        default_directory = (
+            "vocals" if collection_name == "phrases" else "micro_vocals"
+        )
         for phrase in package.get(collection_name, []):
             vocal = phrase["vocal"]
             default_file = (
                 package_dir
-                / vocal.get("directory", collection_name)
+                / vocal.get("directory", default_directory)
                 / vocal["file"]
             )
             if not default_file.is_file() or default_file.stat().st_size == 0:
@@ -174,14 +177,14 @@ def validate_package(package_path: Path) -> dict[str, int]:
         "key_anchor_references": checked_key,
     }
 
-def configure_single_best_render(
+def configure_original_key_render(
     package_path: Path,
     manifest_path: Path,
 ) -> int:
     package = json.loads(package_path.read_text(encoding="utf-8"))
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     if len(manifest["variants"]) != 1:
-        raise ValueError("Single-render mode requires exactly one variant")
+        raise ValueError("Original-key render requires exactly one variant")
     variant = manifest["variants"][0]
     plan = json.loads(Path(variant["style_plan"]).read_text(encoding="utf-8"))
     new_shift = int(manifest["base_key_shift"])
@@ -206,12 +209,12 @@ def configure_single_best_render(
     package["base_key_shift"] = new_shift
     package["vocal_style"] = plan
     package["key_style"] = {
-        "label": "single_profile_key",
+        "label": "original_song_key",
         "default_key_shift": new_shift,
         "available_key_shifts": [new_shift],
         "expression_strengths": [100],
         "manual_key_shift_range": [-3, 3],
-        "selection": "single_best_user_range",
+        "selection": "fixed_original_key",
     }
     package_path.write_text(
         json.dumps(package, ensure_ascii=False, indent=2) + "\n",
@@ -285,10 +288,12 @@ def main() -> None:
                 "--output-dir",
                 str(generated_root / "key_analysis"),
                 "--direct-rvc",
+                "--key-shift",
+                "0",
                 "--style-strengths",
                 "100",
             ],
-            "사용자 음역 분석 및 최적 키 선택",
+            "사용자 음역 분석 및 원곡 키 고정",
         )
         analysis_manifest_path = (
             generated_root / "key_analysis" / "style_variants.json"
@@ -296,15 +301,9 @@ def main() -> None:
         analysis_manifest = json.loads(
             analysis_manifest_path.read_text(encoding="utf-8")
         )
-        selected_shift = int(analysis_manifest["base_key_shift"])
-        selected_anchor = (
-            package_dir
-            / "key_anchors"
-            / anchor_directory_name(selected_shift)
-            / "style_variants.json"
-        )
+        selected_shift = 0
         base_manifest = copy_single_strength_manifest(
-            selected_anchor,
+            analysis_manifest_path,
             generated_root / "base",
             100,
         )
@@ -341,7 +340,7 @@ def main() -> None:
     shutil.copy2(package_path, staging_path)
     selected_shift = base_shift
     if not args.full_variants:
-        selected_shift = configure_single_best_render(
+        selected_shift = configure_original_key_render(
             staging_path, base_manifest
         )
     run(
@@ -413,7 +412,7 @@ def main() -> None:
         "render_root": str(generated_root),
         "manifests_converted": len(all_manifests),
         "render_mode": (
-            "full_variants" if args.full_variants else "single_best_key"
+            "full_variants" if args.full_variants else "original_song_key"
         ),
         "selected_key_shift": selected_shift,
         **validation,

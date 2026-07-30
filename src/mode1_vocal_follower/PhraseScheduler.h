@@ -34,6 +34,14 @@ public:
     void reset() noexcept;
 
     // Returns the phrase index to start, or -1 when no phrase starts.
+    //
+    // activeVocalLeadEnabled asks every phrase target to move
+    // activeMusicalAnticipationSeconds plus that phrase's own content offset
+    // earlier, so the caller can start playback from sample 0 of the clip
+    // (full natural consonant, Oracle C) instead of jumping straight to the
+    // scored vowel, while the vowel still lands close to the intended beat.
+    // It defaults to false, which reproduces the exact prior target-time
+    // computation -- Baseline and Shadow never set it.
     int processBlock(
         int numSamples,
         bool guitarOnset,
@@ -41,7 +49,10 @@ public:
         bool automaticPlayback = false,
         bool guitarActive = false,
         float onsetStrength = 1.0f,
-        const ChordEvidence* chordEvidence = nullptr) noexcept;
+        const ChordEvidence* chordEvidence = nullptr,
+        bool predictNextBoundary = false,
+        double predictedScoreSeconds = -1.0,
+        bool activeVocalLeadEnabled = false) noexcept;
 
     [[nodiscard]] int getNextPhraseIndex() const noexcept { return nextPhraseIndex; }
     [[nodiscard]] int getCurrentChordEventIndex() const noexcept
@@ -70,6 +81,19 @@ public:
     [[nodiscard]] int getRejectedTimingAnchorCount() const noexcept
     {
         return rejectedTimingAnchorCount;
+    }
+    [[nodiscard]] int getScheduledPhraseDelaySamples() const noexcept
+    {
+        return juce::roundToInt(
+            scheduledPhraseDelaySeconds * sampleRate);
+    }
+    // False for a phrase that fired the instant it became next in line at an
+    // already (or just-)confirmed chord boundary -- that path has no
+    // target-time gating, so the caller must not also ask PhrasePlayer to
+    // start earlier in the clip, which would only delay the vowel.
+    [[nodiscard]] bool lastPhraseUsedLeadTiming() const noexcept
+    {
+        return lastPhraseStartUsedLeadTiming;
     }
 
 private:
@@ -109,6 +133,8 @@ private:
     int startBoundaryGracePhrase() noexcept;
     int startDueGuitarPhrase() noexcept;
     int startNextAutomaticPhrase() noexcept;
+    [[nodiscard]] double activeVocalLeadSecondsForPhrase(
+        int phraseIndex) const noexcept;
 
     const SongPackage* song = nullptr;
     double sampleRate = 48'000.0;
@@ -141,7 +167,31 @@ private:
     int timingAnchorCount = 0;
     int acceptedTimingAnchorCount = 0;
     int rejectedTimingAnchorCount = 0;
+    int stablePredictionAnchorCount = 0;
+    double lastTimingPredictionResidualSeconds = 0.0;
     double guitarVocalLeadSeconds = 0.025;
+    double predictiveLookaheadSeconds = 0.120;
+    double scheduledPhraseDelaySeconds = 0.0;
+    double earlyBoundaryCandidateSeconds = -1.0;
+    double learnedArpeggioPhaseLeadSeconds = 0.0;
+    int arpeggioPhaseObservationCount = 0;
+    bool predictionEnabledForBlock = false;
+    double predictedScoreSecondsForBlock = -1.0;
+    bool activeVocalLeadEnabledForBlock = false;
+    bool lastPhraseStartUsedLeadTiming = false;
+    // A deliberate, package-independent "sung ahead of the beat" amount,
+    // confirmed by ear against real guitar takes (Oracle B leadin test:
+    // nudging the whole utterance 100 ms earlier read as most accurate).
+    // Kept separate from guitarVocalLeadSeconds, which compensates measured
+    // output latency, not musical timing.
+    static constexpr double activeMusicalAnticipationSeconds = 0.100;
+    // The intro has already supplied several causal timing anchors before
+    // phrase zero. Match the proven v2 look-ahead for that one entry only;
+    // later phrases retain the conservative anticipation above.
+    static constexpr double firstVocalIntroAnticipationSeconds = 0.250;
+    // Upper bound on how far ahead a single phrase's own content-offset pad
+    // can push its trigger time, independent of the package that produced it.
+    static constexpr double activeVocalLeadCapSeconds = 0.30;
 };
 
 } // namespace mode1

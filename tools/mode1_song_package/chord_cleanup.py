@@ -79,6 +79,7 @@ def transpose_chord_name(name: str, semitones: int) -> str:
 def clean_chord_events(
     events: list[dict],
     minimum_event_seconds: float = 0.35,
+    preserve_repeated_chords: bool = False,
 ) -> list[dict]:
     normalized = [
         {
@@ -108,7 +109,11 @@ def clean_chord_events(
 
     merged: list[dict] = []
     for event in filtered:
-        if merged and merged[-1]["chord"] == event["chord"]:
+        if (
+            not preserve_repeated_chords
+            and merged
+            and merged[-1]["chord"] == event["chord"]
+        ):
             continue
         merged.append(event)
     return merged

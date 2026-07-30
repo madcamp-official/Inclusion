@@ -2,15 +2,32 @@
 
 #include "GuitarOnsetTracker.h"
 #include "GuitarChordTracker.h"
+#include "ChordMismatchGate.h"
+#include "BeatClock.h"
+#include "PredictivePhraseScheduler.h"
+#include "PredictiveTransport.h"
+#include "IntroChromaAligner.h"
+#include "ContinuousChromaExtractor.h"
 #include "PhrasePlayer.h"
 #include "PhraseScheduler.h"
+#include "RealtimeTraceBuffer.h"
 #include "SongPackage.h"
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 
 namespace mode1
 {
+
+enum class FollowerMode : std::uint8_t
+{
+    baseline,
+    predictiveShadow,
+    predictiveActive,
+    activeV2Shadow,
+    activeV2
+};
 
 class Mode1Controller
 {
@@ -19,6 +36,30 @@ public:
     void setOutputLatencySeconds(double seconds) noexcept
     {
         scheduler.setOutputLatencySeconds(seconds);
+        predictiveScheduler.setOutputLatencySeconds(seconds);
+        outputLatencySamplesV2 = static_cast<std::int64_t>(std::llround(
+            std::max(0.0, seconds) * controllerSampleRate));
+    }
+    void setInputLatencySeconds(double seconds) noexcept;
+    void setRealtimeTraceEnabled(bool enabled) noexcept
+    {
+        realtimeTraceEnabled.store(enabled);
+    }
+    bool popRealtimeTraceEvent(RealtimeTraceEvent& event) noexcept
+    {
+        return realtimeTrace.pop(event);
+    }
+    [[nodiscard]] std::uint64_t getDroppedRealtimeTraceCount() const noexcept
+    {
+        return realtimeTrace.getDroppedCount();
+    }
+    [[nodiscard]] ChromaFrame getDiagnosticContinuousChromaFrame() const noexcept
+    {
+        return continuousChromaExtractor.getLatestFrame();
+    }
+    [[nodiscard]] std::int64_t getDiagnosticChromaWindowStartSample() const noexcept
+    {
+        return continuousChromaExtractor.getLatestWindowStartSample();
     }
     bool loadSongPackage(const juce::File& packageFile, juce::String& error);
     void reset() noexcept;
@@ -148,18 +189,82 @@ public:
     }
     [[nodiscard]] juce::String getDetectedChordName() const;
     [[nodiscard]] juce::String getRawDetectedChordName() const;
+    [[nodiscard]] BeatClockSnapshot getBeatClockSnapshot() const noexcept
+    {
+        return beatClock.getSnapshot();
+    }
+    void setFollowerMode(FollowerMode mode) noexcept
+    {
+        followerMode.store(mode);
+    }
+    [[nodiscard]] FollowerMode getFollowerMode() const noexcept
+    {
+        return followerMode.load();
+    }
+    void setPauseOnChordMismatchEnabled(bool enabled) noexcept
+    {
+        pauseOnChordMismatchEnabled.store(enabled);
+        if (!enabled)
+            releaseChordMismatchPauseRequested.store(true);
+    }
+    [[nodiscard]] bool isPauseOnChordMismatchEnabled() const noexcept
+    {
+        return pauseOnChordMismatchEnabled.load();
+    }
+    [[nodiscard]] bool isPausedForChordMismatch() const noexcept
+    {
+        return chordMismatchPausedForUi.load();
+    }
+    void setFollowPerformanceTempoEnabled(bool enabled) noexcept
+    {
+        followPerformanceTempoEnabled.store(enabled);
+        if (!enabled)
+            vocalDurationScale.store(1.0);
+    }
+    [[nodiscard]] bool isFollowPerformanceTempoEnabled() const noexcept
+    {
+        return followPerformanceTempoEnabled.load();
+    }
+    [[nodiscard]] double getVocalDurationScale() const noexcept
+    {
+        return vocalDurationScale.load();
+    }
 
 private:
+    void processSubBlock(
+        const float* guitarInput,
+        float* outputLeft,
+        float* outputRight,
+        int numSamples) noexcept;
     int expectedRootForPhrase(int phraseIndex) const noexcept;
+    int expectedRootForChordEvent(int eventIndex) const noexcept;
+    float expectedChordSimilarity(
+        int eventIndex,
+        const std::array<float, 12>& inputChroma) const noexcept;
+    void releaseChordMismatchPause(
+        std::int64_t decisionSample,
+        int eventIndex) noexcept;
     void updateTransposition(const ChordDetection& detection) noexcept;
     [[nodiscard]] juce::String formatRawDetectedChordName() const;
     [[nodiscard]] juce::String guidedChordName() const;
+    void startPhraseImmediately(int phraseIndex) noexcept;
+    void scheduleActiveV2Phrase(
+        int phraseIndex,
+        std::int64_t targetSample,
+        std::int64_t blockStartSample) noexcept;
+    [[nodiscard]] double calculateVocalDurationScale() const noexcept;
 
     SongPackage songPackage;
     PhrasePlayer phrasePlayer;
     PhraseScheduler scheduler;
     GuitarOnsetTracker onsetTracker;
     GuitarChordTracker chordTracker;
+    BeatClock beatClock;
+    PredictivePhraseScheduler predictiveScheduler;
+    PredictiveTransport predictiveTransport;
+    IntroChromaAligner introChromaAligner;
+    ContinuousChromaExtractor continuousChromaExtractor;
+    ChordMismatchGate chordMismatchGate;
 
     std::atomic<bool> manualTrigger { false };
     std::atomic<bool> automaticPlayback { false };
@@ -185,8 +290,31 @@ private:
     unsigned int observedManualKeyRevision = 0;
     int pendingPitchShift = 0;
     int pendingPitchShiftCount = 0;
+    int pendingPitchShiftLastEventIndex = -1;
+    int pendingPitchShiftDistinctEventCount = 0;
     int pendingCommittedPhrase = -1;
     int pendingCommitBlocks = 0;
+    int maximumInternalBlockSize = 128;
+    double controllerSampleRate = 48'000.0;
+    std::int64_t processedSamples = 0;
+    std::int64_t inputLatencySamples = 0;
+    std::int64_t outputLatencySamplesV2 = 0;
+    int tracedChordEventIndex = -1;
+    int beatClockObservedScoreEventIndex = -1;
+    BeatClockState tracedBeatClockState = BeatClockState::disarmed;
+    BeatClockState tracedPredictiveTransportState =
+        BeatClockState::disarmed;
+    bool introAlignmentApplied = false;
+    std::int64_t lastPhysicalOnsetForChordAnalysis = -1;
+    std::atomic<bool> realtimeTraceEnabled { false };
+    RealtimeTraceBuffer realtimeTrace;
+    std::atomic<FollowerMode> followerMode { FollowerMode::predictiveShadow };
+    std::atomic<bool> pauseOnChordMismatchEnabled { false };
+    std::atomic<bool> releaseChordMismatchPauseRequested { false };
+    std::atomic<bool> chordMismatchPausedForUi { false };
+    std::atomic<bool> followPerformanceTempoEnabled { false };
+    std::atomic<double> vocalDurationScale { 1.0 };
+    int lastChordOnsetScoreEventForAnalysis = -1;
 };
 
 } // namespace mode1

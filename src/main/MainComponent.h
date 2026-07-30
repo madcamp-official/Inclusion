@@ -1,5 +1,6 @@
 #pragma once
 
+#include "AudioLatencyCalibrator.h"
 #include "RecordingSessionScreen.h"
 #include "mode1_vocal_follower/Mode1Controller.h"
 #include "voice_capture/GuidedRecordingSession.h"
@@ -39,8 +40,15 @@ private:
     };
 
     void timerCallback() override;
+    void selectPreferredLowLatencyDevice();
     void configureLowLatencyAudio();
     void showAudioSettings();
+    void requestLatencyMeasurement();
+    void beginLatencyMeasurement();
+    void applyLatencyMeasurement();
+    void resetLatencyCompensation();
+    void refreshLatencyDisplay();
+    bool latencyResultMatchesCurrentDevice() const;
     void setVirtualControlsEnabled(bool enabled);
     void refreshTransportControls();
     void startMode1Performance(bool restart);
@@ -51,10 +59,21 @@ private:
     void stopGuitarTestReplay();
     void refreshGuitarTestControls();
     bool loadGuitarTestReplay(const juce::File& file);
+    juce::String getPerformanceRecordingSongSlug() const;
     juce::File getGuitarTestRecordingFile() const;
+    juce::File getPerformanceOutputRecordingFile() const;
+    juce::File getPerformanceMixRecordingFile() const;
+    juce::File getPerformanceTraceFile() const;
+    juce::File getPerformanceSessionFile() const;
+    juce::Result savePerformanceDiagnostics();
+    juce::Result createPerformanceMix(
+        const juce::File& guitarFile,
+        const juce::File& vocalFile,
+        const juce::File& destination) const;
     void selectMode1();
     void chooseSongPackage();
     bool loadSongPackage(const juce::File& file);
+    juce::File findBundledSongPackage(const juce::String& songSlug) const;
     juce::File findDevelopmentSongPackage() const;
     void triggerNextPhrase();
 
@@ -81,8 +100,20 @@ private:
     std::atomic<float> liveMicrophonePeak { 0.0f };
 
     mode1::Mode1Controller mode1Controller;
+    AudioLatencyCalibrator audioLatencyCalibrator;
+    AudioLatencyCalibrator::Result lastLatencyResult;
+    bool hasLatencyResult = false;
+    std::atomic<bool> measuredLatencyApplied { false };
+    std::atomic<double> effectiveInputLatencySeconds { 0.0 };
+    std::atomic<double> effectiveOutputLatencySeconds { 0.0 };
+    double reportedInputLatencySamples = 0.0;
+    double reportedOutputLatencySamples = 0.0;
+    double latencyMeasurementSampleRate = 0.0;
+    int latencyMeasurementBufferSize = 0;
+    juce::String latencyMeasurementDeviceName;
     voice_capture::VoiceRecorder voiceRecorder;
     voice_capture::VoiceRecorder guitarTestRecorder;
+    voice_capture::VoiceRecorder performanceOutputRecorder;
     voice_capture::InputLevelCalibrator inputLevelCalibrator;
     voice_capture::GuidedRecordingSession guidedRecordingSession;
     voice_capture::VoiceModelTrainer voiceModelTrainer;
@@ -105,9 +136,19 @@ private:
     std::atomic<bool> guitarReplayActive { false };
     std::atomic<bool> guitarReplayFinished { false };
     juce::File lastGuitarTestRecording;
+    juce::File lastPerformanceOutputRecording;
+    juce::File currentSongPackageFile;
 
     juce::TextButton mode1Button { "Mode 1: Vocal Follower" };
     juce::TextButton mode2Button { "Mode 2: Guitar Vocoder" };
+    juce::ComboBox songSelector;
+    juce::ComboBox followerModeSelector;
+    juce::ToggleButton pauseOnWrongChordToggle {
+        L"코드 오류 시 일시정지"
+    };
+    juce::ToggleButton followPerformanceTempoToggle {
+        L"연주 속도에 보컬 맞춤"
+    };
     juce::TextButton loadSongButton { "Load song package" };
     juce::TextButton nextPhraseButton { L"다음 코드 (Space)" };
     juce::TextButton startPerformanceButton { L"시작" };
@@ -118,6 +159,9 @@ private:
     juce::TextButton guitarReplayStartButton { L"녹음으로 테스트" };
     juce::TextButton guitarReplayStopButton { L"테스트 정지" };
     juce::TextButton audioSettingsButton { L"오디오 / ASIO 설정" };
+    juce::TextButton measureLatencyButton { L"레이턴시 측정" };
+    juce::TextButton applyLatencyButton { L"측정값 적용" };
+    juce::TextButton resetLatencyButton { L"기본값 복원" };
     juce::TextButton automaticPlaybackButton { L"자동 연주 시작" };
     juce::TextButton recordButton { L"가이드 녹음 시작" };
     std::array<juce::TextButton, 12> virtualChordButtons;
@@ -132,6 +176,7 @@ private:
     juce::Label songLabel;
     juce::Label lyricLabel;
     juce::Label guitarStatusLabel;
+    juce::Label latencyStatusLabel;
     juce::Label virtualChordLabel;
     juce::Label recordingTitleLabel;
     juce::Label profileProgressLabel;
