@@ -65,6 +65,10 @@ private:
     void showMode2();
     void layoutMode1Panel();
     void applyChalkStyleToMode1Controls();
+    // 모드 1은 조정 손잡이가 많아 기본 화면이 금방 조잡해진다. 연주에 꼭 필요한
+    // 것만 남기고 나머지는 접어 둔다.
+    void collectAdvancedMode1Controls();
+    void setAdvancedControlsVisible(bool shouldBeVisible);
 
     // --- 공통 오디오 장치 ------------------------------------------------
     void selectPreferredLowLatencyDevice();
@@ -163,6 +167,10 @@ private:
     // 패널은 배경을 그리지 않으므로 MainComponent가 그린 종이 질감이 그대로 비친다.
     juce::Component mode1Panel;
     juce::TextButton mode1HomeButton;
+    juce::TextButton advancedToggleButton;
+    // 접힌 상태가 기본이다. 펼침 여부는 화면 전환과 무관하게 유지된다.
+    bool showAdvancedControls = false;
+    std::vector<juce::Component*> advancedMode1Controls;
 
     std::atomic<float> liveGuitarPeak { 0.0f };
     std::atomic<float> liveMicrophonePeak { 0.0f };

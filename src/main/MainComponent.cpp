@@ -188,6 +188,14 @@ MainComponent::MainComponent()
     mode1HomeButton.onClick = [this] { showLanding(); };
     mode1Panel.addAndMakeVisible(mode1HomeButton);
 
+    advancedToggleButton.setColour(juce::TextButton::buttonColourId, guitaru::paperDark());
+    advancedToggleButton.setColour(juce::TextButton::textColourOffId, guitaru::inkMuted());
+    advancedToggleButton.onClick = [this]
+    {
+        setAdvancedControlsVisible(! showAdvancedControls);
+    };
+    mode1Panel.addAndMakeVisible(advancedToggleButton);
+
     loadSongButton.onClick = [this] { chooseSongPackage(); };
     songSelector.setTextWhenNothingSelected(L"곡 선택");
     songSelector.addItem(L"만찬가", 1);
@@ -603,6 +611,8 @@ MainComponent::MainComponent()
     addChildComponent(recordingSessionScreen);
 
     applyChalkStyleToMode1Controls();
+    collectAdvancedMode1Controls();
+    setAdvancedControlsVisible(false);
 
     // --- 모드 2 화면 -----------------------------------------------------
     loadChannelMap();
@@ -2709,54 +2719,69 @@ void MainComponent::layoutMode1Panel()
     if (area.isEmpty())
         return;
 
-    auto headerRow = area.removeFromTop(34);
+    // --- 항상 보이는 것 -------------------------------------------------
+    auto headerRow = area.removeFromTop(36);
     mode1HomeButton.setBounds(headerRow.removeFromLeft(96).reduced(2, 0));
     headerRow.removeFromLeft(12);
+    advancedToggleButton.setBounds(headerRow.removeFromRight(150).reduced(2, 0));
+    headerRow.removeFromRight(12);
     mode1StatusLabel.setBounds(headerRow);
-    area.removeFromTop(10);
+    area.removeFromTop(14);
 
-    auto songRow = area.removeFromTop(42);
+    auto songRow = area.removeFromTop(44);
     songSelector.setBounds(
         songRow.removeFromLeft(
-            juce::roundToInt(songRow.getWidth() * 0.42f)).reduced(4, 0));
+            juce::roundToInt(songRow.getWidth() * 0.34f)).reduced(4, 0));
     followerModeSelector.setBounds(
         songRow.removeFromLeft(
-            juce::roundToInt(songRow.getWidth() * 0.50f)).reduced(4, 0));
-    loadSongButton.setBounds(songRow.reduced(4, 0));
-    area.removeFromTop(6);
+            juce::roundToInt(songRow.getWidth() * 0.45f)).reduced(4, 0));
+    mode1AudioSettingsButton.setBounds(songRow.reduced(4, 0));
+    area.removeFromTop(10);
 
-    auto transportRow = area.removeFromTop(40);
-    const int transportButtonWidth = transportRow.getWidth() / 4;
+    songLabel.setBounds(area.removeFromTop(28));
+    area.removeFromTop(8);
+
+    // 가사가 이 화면의 주인공이다. 접힌 상태에서는 남는 공간을 가사에 준다.
+    const int lyricHeight = showAdvancedControls
+        ? 110
+        : juce::jlimit(140, 300, area.getHeight() - 190);
+    lyricLabel.setBounds(area.removeFromTop(lyricHeight));
+    area.removeFromTop(10);
+
+    guitarStatusLabel.setBounds(area.removeFromTop(30));
+    area.removeFromTop(8);
+
+    auto transportRow = area.removeFromTop(46);
+    const int transportButtonWidth = transportRow.getWidth() / 3;
     startPerformanceButton.setBounds(
         transportRow.removeFromLeft(transportButtonWidth).reduced(4, 0));
     restartPerformanceButton.setBounds(
         transportRow.removeFromLeft(transportButtonWidth).reduced(4, 0));
-    stopPerformanceButton.setBounds(
-        transportRow.removeFromLeft(transportButtonWidth).reduced(4, 0));
-    nextPhraseButton.setBounds(transportRow.reduced(4, 0));
+    stopPerformanceButton.setBounds(transportRow.reduced(4, 0));
+    area.removeFromTop(8);
+
+    auto guitarTestRow = area.removeFromTop(40);
+    guitarRecordStartButton.setBounds(
+        guitarTestRow.removeFromLeft(guitarTestRow.getWidth() / 2).reduced(4, 0));
+    guitarRecordStopButton.setBounds(guitarTestRow.reduced(4, 0));
+    area.removeFromTop(10);
+
+    // --- 접히는 것 ------------------------------------------------------
+    if (! showAdvancedControls)
+        return;
+
+    auto extraRow = area.removeFromTop(36);
+    loadSongButton.setBounds(extraRow.removeFromLeft(190).reduced(4, 0));
+    nextPhraseButton.setBounds(extraRow.removeFromLeft(190).reduced(4, 0));
+    automaticPlaybackButton.setBounds(extraRow.removeFromLeft(190).reduced(4, 0));
+    guitarChannelSelector.setBounds(extraRow.reduced(4, 0));
     area.removeFromTop(5);
 
-    auto guitarTestRow = area.removeFromTop(36);
-    const int guitarTestButtonWidth = guitarTestRow.getWidth() / 4;
-    guitarRecordStartButton.setBounds(
-        guitarTestRow.removeFromLeft(guitarTestButtonWidth).reduced(4, 0));
-    guitarRecordStopButton.setBounds(
-        guitarTestRow.removeFromLeft(guitarTestButtonWidth).reduced(4, 0));
+    auto replayRow = area.removeFromTop(36);
     guitarReplayStartButton.setBounds(
-        guitarTestRow.removeFromLeft(guitarTestButtonWidth).reduced(4, 0));
-    guitarReplayStopButton.setBounds(guitarTestRow.reduced(4, 0));
-    area.removeFromTop(8);
-
-    songLabel.setBounds(area.removeFromTop(30));
-    area.removeFromTop(8);
-    lyricLabel.setBounds(area.removeFromTop(115));
-    area.removeFromTop(8);
-    auto guitarRow = area.removeFromTop(34);
-    mode1AudioSettingsButton.setBounds(
-        guitarRow.removeFromLeft(165).reduced(4, 0));
-    guitarChannelSelector.setBounds(
-        guitarRow.removeFromLeft(180).reduced(4, 0));
-    guitarStatusLabel.setBounds(guitarRow.reduced(4, 0));
+        replayRow.removeFromLeft(190).reduced(4, 0));
+    guitarReplayStopButton.setBounds(
+        replayRow.removeFromLeft(190).reduced(4, 0));
     area.removeFromTop(5);
 
     auto latencyButtonRow = area.removeFromTop(34);
@@ -2772,12 +2797,10 @@ void MainComponent::layoutMode1Panel()
     auto virtualHeader = area.removeFromTop(32);
     virtualChordLabel.setBounds(
         virtualHeader.removeFromLeft(
-            std::max(120, virtualHeader.getWidth() - 630)).reduced(4, 0));
+            std::max(120, virtualHeader.getWidth() - 450)).reduced(4, 0));
     pauseOnWrongChordToggle.setBounds(
         virtualHeader.removeFromLeft(220).reduced(4, 0));
     followPerformanceTempoToggle.setBounds(
-        virtualHeader.removeFromLeft(220).reduced(4, 0));
-    automaticPlaybackButton.setBounds(
         virtualHeader.reduced(4, 0));
     area.removeFromTop(4);
 
@@ -2853,6 +2876,53 @@ void MainComponent::applyChalkStyleToMode1Controls()
     recordButton.setColour(juce::TextButton::buttonColourId, guitaru::red());
     loadSongButton.setColour(juce::TextButton::buttonColourId, guitaru::green());
     mode1AudioSettingsButton.setColour(juce::TextButton::buttonColourId, guitaru::inkMuted());
+}
+
+// 기본 화면에 남길 것: 곡/모델 고르기, 시작·재시작·중지, 기타 입력 녹음·저장,
+// 오디오 장치 설정, 그리고 연주 중 봐야 하는 가사와 입력 상태.
+// 나머지 조정 손잡이와 진단용 컨트롤은 전부 여기로 접는다.
+void MainComponent::collectAdvancedMode1Controls()
+{
+    advancedMode1Controls = {
+        &loadSongButton,
+        &nextPhraseButton,
+        &automaticPlaybackButton,
+        &guitarReplayStartButton,
+        &guitarReplayStopButton,
+        &measureLatencyButton,
+        &applyLatencyButton,
+        &resetLatencyButton,
+        &latencyStatusLabel,
+        &pauseOnWrongChordToggle,
+        &followPerformanceTempoToggle,
+        &virtualChordLabel,
+        &guitarChannelSelector,
+        &expressionLabel,
+        &expressionSlider,
+        &keyShiftLabel,
+        &keyShiftSlider,
+        &recordingTitleLabel,
+        &microphoneChannelSelector,
+        &noiseReductionToggle,
+        &recordButton,
+        &profileProgressLabel,
+        &profileProgressBar,
+        &recordingStatusLabel,
+    };
+    for (auto& button : virtualChordButtons)
+        advancedMode1Controls.push_back(&button);
+}
+
+void MainComponent::setAdvancedControlsVisible(bool shouldBeVisible)
+{
+    showAdvancedControls = shouldBeVisible;
+    for (auto* control : advancedMode1Controls)
+        control->setVisible(shouldBeVisible);
+
+    advancedToggleButton.setButtonText(
+        shouldBeVisible ? utf8("고급 설정  ▾") : utf8("고급 설정  ▸"));
+    layoutMode1Panel();
+    mode1Panel.repaint();
 }
 
 void MainComponent::updateAudioDeviceStatus()
