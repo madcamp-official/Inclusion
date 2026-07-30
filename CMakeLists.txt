@@ -49,7 +49,11 @@ endif()
 # 자동으로 감지되어 링크된다. 없으면 이 블록은 건너뛰고 HAVE_SOUNDTOUCH=0 으로 빌드된다.
 set(SOUNDTOUCH_DIR ${CMAKE_SOURCE_DIR}/external/soundtouch)
 if(EXISTS ${SOUNDTOUCH_DIR}/CMakeLists.txt)
+    # SoundTouch 2.3.3 still declares CMake 3.1 compatibility. Newer CMake
+    # releases require an explicit policy floor for such dependencies.
+    set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
     set(SOUNDSTRETCH OFF CACHE BOOL "Build soundstretch command line utility." FORCE)
+    set(SOUNDTOUCH_DLL OFF CACHE BOOL "" FORCE)
     add_subdirectory(${SOUNDTOUCH_DIR})
     set(HAVE_SOUNDTOUCH TRUE)
 else()
@@ -63,10 +67,15 @@ function(configure_pitch_shifter target)
     if(HAVE_RUBBERBAND)
         target_link_libraries(${target} PRIVATE RubberBand::RubberBand)
         target_compile_definitions(${target} PRIVATE HAVE_RUBBERBAND=1)
+    else()
+        target_compile_definitions(${target} PRIVATE HAVE_RUBBERBAND=0)
     endif()
+    # 모드 1 쪽 코드는 `#if HAVE_SOUNDTOUCH`로 분기하므로 없을 때도 0으로 정의해 둔다.
     if(HAVE_SOUNDTOUCH)
         target_link_libraries(${target} PRIVATE SoundTouch)
         target_compile_definitions(${target} PRIVATE HAVE_SOUNDTOUCH=1)
+    else()
+        target_compile_definitions(${target} PRIVATE HAVE_SOUNDTOUCH=0)
     endif()
 endfunction()
 
@@ -102,6 +111,26 @@ target_sources(VocalGuitarApp PRIVATE
     src/mode2_guitar_vocoder/WorldRealtimePitchShifter.cpp
     src/mode2_guitar_vocoder/Mode2Controller.cpp
     src/ui/mode2/Mode2Screen.cpp
+    src/main/AudioLatencyCalibrator.cpp
+    src/mode1_vocal_follower/GuitarChordTracker.cpp
+    src/mode1_vocal_follower/GuitarOnsetTracker.cpp
+    src/mode1_vocal_follower/BeatClock.cpp
+    src/mode1_vocal_follower/PredictiveTransport.cpp
+    src/mode1_vocal_follower/IntroChromaAligner.cpp
+    src/mode1_vocal_follower/ContinuousChromaExtractor.cpp
+    src/mode1_vocal_follower/PredictivePhraseScheduler.cpp
+    src/mode1_vocal_follower/Mode1Controller.cpp
+    src/mode1_vocal_follower/PhrasePlayer.cpp
+    src/mode1_vocal_follower/PhraseScheduler.cpp
+    src/mode1_vocal_follower/SongPackage.cpp
+    src/voice_capture/RecordingQualityChecker.cpp
+    src/voice_capture/InputLevelCalibrator.cpp
+    src/voice_capture/NoiseReducer.cpp
+    src/voice_capture/VoiceRecorder.cpp
+    src/voice_capture/VoiceActivityTracker.cpp
+    src/voice_capture/GuidedRecordingSession.cpp
+    src/voice_capture/VoiceModelTrainer.cpp
+    src/main/RecordingSessionScreen.cpp
 )
 
 target_include_directories(VocalGuitarApp PRIVATE
@@ -116,11 +145,16 @@ target_compile_definitions(VocalGuitarApp
         JUCE_APPLICATION_VERSION_STRING="$<TARGET_PROPERTY:VocalGuitarApp,JUCE_VERSION>"
 )
 
+if(WIN32)
+    target_compile_definitions(VocalGuitarApp PRIVATE JUCE_ASIO=1)
+endif()
+
 target_link_libraries(VocalGuitarApp
     PRIVATE
         GuitaruAssets
         juce::juce_audio_utils
         juce::juce_audio_devices
+        juce::juce_audio_formats
         juce::juce_dsp
         juce::juce_gui_extra
     PUBLIC
@@ -130,6 +164,223 @@ target_link_libraries(VocalGuitarApp
 )
 
 configure_pitch_shifter(VocalGuitarApp)
+
+if(MSVC)
+    # 소스에 한글 주석이 섞여 있으면 MSVC가 기본 코드페이지(949)로 오해석해
+    # 파싱이 깨지는 문제가 있어 UTF-8로 강제 해석하도록 지정
+    target_compile_options(VocalGuitarApp PRIVATE /utf-8)
+endif()
+
+# --- Mode 1 core integration test --------------------------------------
+enable_testing()
+
+juce_add_console_app(Mode1CoreTests
+    PRODUCT_NAME "Mode 1 Core Tests"
+)
+
+target_sources(Mode1CoreTests PRIVATE
+    tests/mode1/Mode1CoreTests.cpp
+    src/mode1_vocal_follower/GuitarChordTracker.cpp
+    src/mode1_vocal_follower/GuitarOnsetTracker.cpp
+    src/mode1_vocal_follower/BeatClock.cpp
+    src/mode1_vocal_follower/PredictiveTransport.cpp
+    src/mode1_vocal_follower/IntroChromaAligner.cpp
+    src/mode1_vocal_follower/ContinuousChromaExtractor.cpp
+    src/mode1_vocal_follower/PredictivePhraseScheduler.cpp
+    src/mode1_vocal_follower/Mode1Controller.cpp
+    src/mode1_vocal_follower/PhrasePlayer.cpp
+    src/mode1_vocal_follower/PhraseScheduler.cpp
+    src/mode1_vocal_follower/SongPackage.cpp
+)
+
+target_include_directories(Mode1CoreTests PRIVATE src)
+
+target_compile_definitions(Mode1CoreTests
+    PRIVATE
+        JUCE_WEB_BROWSER=0
+        JUCE_USE_CURL=0
+)
+
+target_link_libraries(Mode1CoreTests
+    PRIVATE
+        juce::juce_audio_formats
+        juce::juce_audio_utils
+        juce::juce_dsp
+    PUBLIC
+        juce::juce_recommended_config_flags
+        juce::juce_recommended_warning_flags
+)
+
+if(HAVE_SOUNDTOUCH)
+    target_link_libraries(Mode1CoreTests PRIVATE SoundTouch)
+    target_compile_definitions(Mode1CoreTests PRIVATE HAVE_SOUNDTOUCH=1)
+else()
+    target_compile_definitions(Mode1CoreTests PRIVATE HAVE_SOUNDTOUCH=0)
+endif()
+
+if(MSVC)
+    target_compile_options(Mode1CoreTests PRIVATE /utf-8)
+endif()
+
+add_test(
+    NAME Mode1CoreTests
+    COMMAND Mode1CoreTests
+)
+
+# --- Voice capture quality/noise reduction test ------------------------
+juce_add_console_app(VoiceCaptureTests
+    PRODUCT_NAME "Voice Capture Tests"
+)
+
+target_sources(VoiceCaptureTests PRIVATE
+    tests/voice_capture/VoiceCaptureTests.cpp
+    src/voice_capture/NoiseReducer.cpp
+    src/voice_capture/RecordingQualityChecker.cpp
+    src/voice_capture/InputLevelCalibrator.cpp
+    src/voice_capture/VoiceRecorder.cpp
+    src/voice_capture/VoiceActivityTracker.cpp
+    src/voice_capture/GuidedRecordingSession.cpp
+)
+
+target_include_directories(VoiceCaptureTests PRIVATE src)
+target_link_libraries(VoiceCaptureTests
+    PRIVATE
+        juce::juce_audio_basics
+        juce::juce_audio_formats
+    PUBLIC
+        juce::juce_recommended_config_flags
+        juce::juce_recommended_warning_flags
+)
+
+if(MSVC)
+    target_compile_options(VoiceCaptureTests PRIVATE /utf-8)
+endif()
+
+add_test(
+    NAME VoiceCaptureTests
+    COMMAND VoiceCaptureTests
+)
+
+# --- MIDI Splitter tool (곡 데이터 제작용 — SynthV 등의 트랙당 노트 수 제한 우회) ---
+juce_add_console_app(MidiSplitter
+    PRODUCT_NAME "MIDI Splitter"
+)
+
+target_sources(MidiSplitter PRIVATE
+    tools/midi_splitter/Main.cpp
+)
+
+target_link_libraries(MidiSplitter
+    PRIVATE
+        juce::juce_core
+        juce::juce_audio_basics
+    PUBLIC
+        juce::juce_recommended_config_flags
+        juce::juce_recommended_warning_flags
+)
+
+if(MSVC)
+    target_compile_options(MidiSplitter PRIVATE /utf-8)
+endif()
+
+# --- WAV Splitter tool (MidiSplitter가 남긴 boundaries.csv로 원본 보컬 WAV를 같은 지점에서 자름) ---
+juce_add_console_app(WavSplitter
+    PRODUCT_NAME "WAV Splitter"
+)
+
+target_sources(WavSplitter PRIVATE
+    tools/wav_splitter/Main.cpp
+)
+
+target_link_libraries(WavSplitter
+    PRIVATE
+        juce::juce_core
+        juce::juce_audio_basics
+        juce::juce_audio_formats
+    PUBLIC
+        juce::juce_recommended_config_flags
+        juce::juce_recommended_warning_flags
+)
+
+if(MSVC)
+    target_compile_options(WavSplitter PRIVATE /utf-8)
+endif()
+
+# --- Mode 1 offline guitar/replay renderer -----------------------------
+juce_add_console_app(Mode1OfflineRenderer
+    PRODUCT_NAME "Mode 1 Offline Renderer"
+)
+
+target_sources(Mode1OfflineRenderer PRIVATE
+    tools/mode1_offline_renderer/Main.cpp
+    src/mode1_vocal_follower/GuitarChordTracker.cpp
+    src/mode1_vocal_follower/GuitarOnsetTracker.cpp
+    src/mode1_vocal_follower/BeatClock.cpp
+    src/mode1_vocal_follower/PredictiveTransport.cpp
+    src/mode1_vocal_follower/IntroChromaAligner.cpp
+    src/mode1_vocal_follower/ContinuousChromaExtractor.cpp
+    src/mode1_vocal_follower/PredictivePhraseScheduler.cpp
+    src/mode1_vocal_follower/Mode1Controller.cpp
+    src/mode1_vocal_follower/PhrasePlayer.cpp
+    src/mode1_vocal_follower/PhraseScheduler.cpp
+    src/mode1_vocal_follower/SongPackage.cpp
+)
+
+target_include_directories(Mode1OfflineRenderer PRIVATE src)
+
+target_compile_definitions(Mode1OfflineRenderer
+    PRIVATE
+        JUCE_WEB_BROWSER=0
+        JUCE_USE_CURL=0
+)
+
+target_link_libraries(Mode1OfflineRenderer
+    PRIVATE
+        juce::juce_audio_formats
+        juce::juce_audio_utils
+        juce::juce_dsp
+    PUBLIC
+        juce::juce_recommended_config_flags
+        juce::juce_recommended_warning_flags
+)
+
+if(HAVE_SOUNDTOUCH)
+    target_link_libraries(Mode1OfflineRenderer PRIVATE SoundTouch)
+    target_compile_definitions(Mode1OfflineRenderer PRIVATE HAVE_SOUNDTOUCH=1)
+else()
+    target_compile_definitions(Mode1OfflineRenderer PRIVATE HAVE_SOUNDTOUCH=0)
+endif()
+
+if(MSVC)
+    target_compile_options(Mode1OfflineRenderer PRIVATE /utf-8)
+endif()
+
+# --- Generic audio decoder for timing-analysis fixtures ----------------
+juce_add_console_app(AudioToWav
+    PRODUCT_NAME "Audio To WAV"
+)
+
+target_sources(AudioToWav PRIVATE
+    tools/audio_to_wav/Main.cpp
+)
+
+target_compile_definitions(AudioToWav
+    PRIVATE
+        JUCE_WEB_BROWSER=0
+        JUCE_USE_CURL=0
+)
+
+target_link_libraries(AudioToWav
+    PRIVATE
+        juce::juce_audio_formats
+    PUBLIC
+        juce::juce_recommended_config_flags
+        juce::juce_recommended_warning_flags
+)
+
+if(MSVC)
+    target_compile_options(AudioToWav PRIVATE /utf-8)
+endif()
 
 # --- Mode 2 오프라인 재현 도구 -------------------------------------------
 # 앱이 녹음한 입력 WAV를 앱과 같은 DSP에 통과시켜, 파라미터만 바꿔가며 결과를 비교할 수 있게 한다.
@@ -173,6 +424,10 @@ target_link_libraries(Mode2Offline
 
 configure_pitch_shifter(Mode2Offline)
 
+if(MSVC)
+    target_compile_options(Mode2Offline PRIVATE /utf-8)
+endif()
+
 # --- macOS 통합 오디오 기기 도구 -----------------------------------------
 # 기타(오디오 인터페이스)와 목소리(다른 마이크)를 동시에 받으려면 통합 기기가 필요하다.
 # 손으로 만들면 구성이 사람마다 달라져 채널 번호가 어긋나므로 도구로 재현한다.
@@ -213,3 +468,12 @@ target_link_libraries(Mode2Tests
 )
 
 configure_pitch_shifter(Mode2Tests)
+
+if(MSVC)
+    target_compile_options(Mode2Tests PRIVATE /utf-8)
+endif()
+
+add_test(
+    NAME Mode2Tests
+    COMMAND Mode2Tests
+)
