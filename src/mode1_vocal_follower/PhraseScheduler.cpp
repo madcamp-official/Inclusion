@@ -924,8 +924,19 @@ int PhraseScheduler::startDueGuitarPhrase() noexcept
 
     const auto& nextPhrase =
         phrases[static_cast<size_t>(nextPhraseIndex)];
-    if (nextPhrase.anchorChordEventIndex < 0)
-        return -1;
+    // Under mora-granularity there can be more short phrases than chord
+    // events close enough (350ms) to anchor to, so anchorChordEventIndex
+    // is legitimately -1 for a real fraction of phrases (41% measured on
+    // a real package) rather than the rare edge case this guard used to
+    // assume. Returning -1 here treated that phrase as permanently
+    // unschedulable -- nextPhraseIndex never advances past it, freezing
+    // the whole reactive scheduler on the very first one (verified: 1
+    // phrase played out of 90+ for an entire take). Every comparison
+    // below against anchorChordEventIndex safely evaluates false for -1
+    // (it can't equal or exceed a real chord index), so an unanchored
+    // phrase falls through to the plain time-gated path a few lines down
+    // instead -- exactly the fallback a phrase anchored to a chord that
+    // just hasn't been confirmed yet would also use.
     bool predictsNextBoundary = false;
     if (nextPhrase.anchorChordEventIndex > currentChordEventIndex)
     {
