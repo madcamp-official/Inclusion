@@ -553,7 +553,7 @@ void PredictiveTransport::updateState(
     const double silenceSeconds =
         static_cast<double>(blockEndSample - lastRawOnsetSample) / sampleRate;
     const double holdingThresholdBeats =
-        introAlignmentLocked && confidence >= 0.55 ? 4.0 : 1.25;
+        introAlignmentLocked && confidence >= 0.55 ? 1.5 : 1.0;
     if (!guitarActive
         && silenceSeconds >= beatSeconds * holdingThresholdBeats)
     {
