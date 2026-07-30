@@ -343,6 +343,8 @@ def build_package(args: argparse.Namespace) -> Path:
                         if args.source_clock
                         else float(line["end_sec"])
                     ),
+                    "start_sec_nominal": float(line["start_sec"]),
+                    "end_sec_nominal": float(line["end_sec"]),
                 },
                 "source": {
                     "start_sec": round(source_start, 6),
@@ -382,6 +384,7 @@ def build_package(args: argparse.Namespace) -> Path:
             if (
                 args.minimum_source_phrase_gap > 0.0
                 and micro_phrases
+                and micro_phrases[-1]["parent_line_idx"] == int(line["line_idx"])
                 and source_start
                     - float(micro_phrases[-1]["source"]["start_sec"])
                     < args.minimum_source_phrase_gap
@@ -394,6 +397,7 @@ def build_package(args: argparse.Namespace) -> Path:
                     if args.source_clock
                     else float(span["end_sec"])
                 )
+                previous["score"]["end_sec_nominal"] = float(span["end_sec"])
                 previous["source"]["end_sec"] = round(source_end, 6)
                 previous["chords"] = chords_for_span(
                     chord_events,
@@ -446,6 +450,8 @@ def build_package(args: argparse.Namespace) -> Path:
                             if args.source_clock
                             else float(span["end_sec"])
                         ),
+                        "start_sec_nominal": float(span["start_sec"]),
+                        "end_sec_nominal": float(span["end_sec"]),
                     },
                     "source": {
                         "start_sec": round(source_start, 6),
