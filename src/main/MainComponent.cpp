@@ -223,7 +223,6 @@ MainComponent::MainComponent()
     followerModeSelector.addItem(L"예측 Active", 3);
     followerModeSelector.addItem(L"Active v2 Shadow", 4);
     followerModeSelector.addItem(L"Active v2", 5);
-    followerModeSelector.setSelectedId(2, juce::dontSendNotification);
     followerModeSelector.setTooltip(
         L"Shadow는 측정만 하고, Active만 제한된 다음 경계 예측을 재생에 적용합니다.");
     followerModeSelector.onChange = [this]
@@ -255,6 +254,12 @@ MainComponent::MainComponent()
                     : L"기준선: 기타 이벤트 기반 재생",
             juce::dontSendNotification);
     };
+    // 기본값을 Active v2로 둔다. 같은 기타 입력으로 오프라인 렌더러를 돌려 보면
+    // 기준선/예측 Shadow는 프레이즈를 통째로 버리고 악보에 없는 공백을 만드는데
+    // (연속 연주 40초 기준: 73개 중 34개 유실, 악보보다 0.5초 이상 늘어진 구간 6곳),
+    // Active v2는 같은 입력에서 유실 0개, 늘어진 구간 0곳이었다.
+    // onChange가 컨트롤러까지 함께 맞추므로 콤보 설정은 핸들러를 단 뒤에 한다.
+    followerModeSelector.setSelectedId(5, juce::sendNotificationSync);
     nextPhraseButton.onClick = [this] { triggerNextPhrase(); };
     nextPhraseButton.setEnabled(false);
     mode1Panel.addAndMakeVisible(songSelector);
