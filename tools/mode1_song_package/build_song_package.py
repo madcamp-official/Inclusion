@@ -224,9 +224,18 @@ def split_line_into_micro_spans(
         duration = float(current["end_sec"]) - float(first["start_sec"])
         next_duration = float(following["end_sec"]) - float(first["start_sec"])
         gap = float(following["start_sec"]) - float(current["end_sec"])
+        # A melisma holds one lyric character across two or more consecutive
+        # notes, so those notes share the same char_start/char_end. Splitting
+        # a span between them makes make_micro_span() include that character
+        # in *both* halves via its min(char_starts)/max(char_ends) range,
+        # duplicating the character in the rendered lyrics.
+        same_character_as_next = (
+            int(current.get("char_start", -1))
+            == int(following.get("char_start", -2))
+        )
         should_close = duration >= minimum_sec and (
             gap >= 0.09 or next_duration > maximum_sec
-        )
+        ) and not same_character_as_next
         if should_close:
             spans.append(
                 make_micro_span(line, notes[group_start : index + 1])
@@ -381,17 +390,64 @@ def build_package(args: argparse.Namespace) -> Path:
             source_end = max(source_start + 0.05, source_end)
             previous_micro_end = source_end
 
+            # A melisma holds one lyric character across two or more
+            # consecutive notes, so those notes share the same char_start.
+            # If this span's first note is such a continuation of the
+            # previous micro-phrase's last note, it MUST be merged in
+            # regardless of the gap threshold below -- treating them as
+            # separate entries would make both independently claim the same
+            # character (each computes its own min/max char range), which
+            # duplicates it in the final lyrics (e.g. "君" + "君を" both
+            # showing "君").
+            shares_melisma_with_previous = bool(
+                micro_phrases
+                and micro_phrases[-1]["parent_line_idx"]
+                    == int(line["line_idx"])
+                and micro_phrases[-1]["notes"]
+                and span["notes"]
+                and int(micro_phrases[-1]["notes"][-1].get(
+                    "char_start", -1))
+                    == int(span["notes"][0].get("char_start", -2))
+            )
             if (
-                args.minimum_source_phrase_gap > 0.0
-                and micro_phrases
+                micro_phrases
                 and micro_phrases[-1]["parent_line_idx"] == int(line["line_idx"])
-                and source_start
-                    - float(micro_phrases[-1]["source"]["start_sec"])
-                    < args.minimum_source_phrase_gap
+                and (
+                    shares_melisma_with_previous
+                    or (
+                        args.minimum_source_phrase_gap > 0.0
+                        and source_start
+                            - float(micro_phrases[-1]["source"]["start_sec"])
+                            < args.minimum_source_phrase_gap
+                    )
+                )
             ):
                 previous = micro_phrases[-1]
-                previous["lyrics"] += span["lyrics"]
                 previous["notes"].extend(span["notes"])
+                # Recompute from the full combined note range instead of
+                # concatenating strings: --minimum-source-phrase-gap merges
+                # spans that are close together in time, which under
+                # --mora-granularity often means merging two single-note
+                # spans that both belong to the same melisma-held
+                # character. Naive `+=` duplicated that character (e.g.
+                # "君" + "君" + "を" -> "君君を"); re-slicing the line text
+                # by the merged notes' min/max char range does not.
+                merged_char_starts = [
+                    int(n.get("char_start", 0)) for n in previous["notes"]
+                ]
+                merged_char_ends = [
+                    int(n.get("char_end", 0)) for n in previous["notes"]
+                ]
+                merged_char_start = min(merged_char_starts, default=0)
+                merged_char_end = max(
+                    merged_char_ends, default=merged_char_start
+                )
+                merged_lyrics = line["text"][
+                    merged_char_start:merged_char_end
+                ].strip()
+                previous["lyrics"] = merged_lyrics or (
+                    previous["lyrics"] + span["lyrics"]
+                )
                 previous["score"]["end_sec"] = (
                     round(source_end, 6)
                     if args.source_clock
