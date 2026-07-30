@@ -2741,10 +2741,11 @@ void MainComponent::layoutMode1Panel()
     songLabel.setBounds(area.removeFromTop(28));
     area.removeFromTop(8);
 
-    // 가사가 이 화면의 주인공이다. 접힌 상태에서는 남는 공간을 가사에 준다.
+    // 가사가 이 화면의 주인공이다. 접힌 상태에서는 아래 항상 보이는 것들을
+    // 뺀 나머지를 가사에 준다(연주·녹음 줄 + 목소리 녹음 한 벌 = 약 363px).
     const int lyricHeight = showAdvancedControls
         ? 110
-        : juce::jlimit(140, 300, area.getHeight() - 190);
+        : juce::jlimit(110, 260, area.getHeight() - 363);
     lyricLabel.setBounds(area.removeFromTop(lyricHeight));
     area.removeFromTop(10);
 
@@ -2764,6 +2765,24 @@ void MainComponent::layoutMode1Panel()
     guitarRecordStartButton.setBounds(
         guitarTestRow.removeFromLeft(guitarTestRow.getWidth() / 2).reduced(4, 0));
     guitarRecordStopButton.setBounds(guitarTestRow.reduced(4, 0));
+    area.removeFromTop(12);
+
+    // 내 목소리 녹음 한 벌. 마이크 채널과 잡음 제거는 이 흐름에서 바로 정해야
+    // 하므로 접지 않고 여기 함께 둔다.
+    recordingTitleLabel.setBounds(area.removeFromTop(28));
+    auto recordingOptions = area.removeFromTop(34);
+    microphoneChannelSelector.setBounds(
+        recordingOptions.removeFromLeft(240).reduced(4, 0));
+    noiseReductionToggle.setBounds(recordingOptions.reduced(6, 0));
+    area.removeFromTop(8);
+
+    recordButton.setBounds(
+        area.removeFromTop(40).removeFromLeft(250).reduced(4, 0));
+    area.removeFromTop(8);
+
+    profileProgressLabel.setBounds(area.removeFromTop(22));
+    profileProgressBar.setBounds(area.removeFromTop(14).reduced(4, 1));
+    recordingStatusLabel.setBounds(area.removeFromTop(55));
     area.removeFromTop(10);
 
     // --- 접히는 것 ------------------------------------------------------
@@ -2829,21 +2848,6 @@ void MainComponent::layoutMode1Panel()
     keyShiftLabel.setBounds(
         keyShiftRow.removeFromLeft(280).reduced(4, 0));
     keyShiftSlider.setBounds(keyShiftRow.reduced(4, 0));
-    area.removeFromTop(12);
-
-    recordingTitleLabel.setBounds(area.removeFromTop(28));
-    auto recordingOptions = area.removeFromTop(34);
-    microphoneChannelSelector.setBounds(
-        recordingOptions.removeFromLeft(240).reduced(4, 0));
-    noiseReductionToggle.setBounds(recordingOptions.reduced(6, 0));
-    area.removeFromTop(8);
-
-    recordButton.setBounds(area.removeFromTop(40).removeFromLeft(250).reduced(4, 0));
-    area.removeFromTop(8);
-
-    profileProgressLabel.setBounds(area.removeFromTop(22));
-    profileProgressBar.setBounds(area.removeFromTop(14).reduced(4, 1));
-    recordingStatusLabel.setBounds(area.removeFromTop(55));
 }
 
 // 모드 1 UI는 친구 쪽에서 JUCE 기본 룩앤필을 전제로 만들어졌다. 위젯 종류별 그리기는
@@ -2879,7 +2883,7 @@ void MainComponent::applyChalkStyleToMode1Controls()
 }
 
 // 기본 화면에 남길 것: 곡/모델 고르기, 시작·재시작·중지, 기타 입력 녹음·저장,
-// 오디오 장치 설정, 그리고 연주 중 봐야 하는 가사와 입력 상태.
+// 오디오 장치 설정, 내 목소리 녹음 한 벌, 그리고 연주 중 봐야 하는 가사와 입력 상태.
 // 나머지 조정 손잡이와 진단용 컨트롤은 전부 여기로 접는다.
 void MainComponent::collectAdvancedMode1Controls()
 {
@@ -2901,13 +2905,6 @@ void MainComponent::collectAdvancedMode1Controls()
         &expressionSlider,
         &keyShiftLabel,
         &keyShiftSlider,
-        &recordingTitleLabel,
-        &microphoneChannelSelector,
-        &noiseReductionToggle,
-        &recordButton,
-        &profileProgressLabel,
-        &profileProgressBar,
-        &recordingStatusLabel,
     };
     for (auto& button : virtualChordButtons)
         advancedMode1Controls.push_back(&button);
