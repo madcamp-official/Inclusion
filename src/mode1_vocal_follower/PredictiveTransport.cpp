@@ -217,16 +217,57 @@ bool PredictiveTransport::observeHarmonicOnset(
     const double scoreError = trustedScore - predictedScoreAtOnset;
     phaseErrorSeconds =
         -scoreError * performanceSecondsPerScoreSecond;
-    // VARIANT_B: the previous 0.12 gain / 20ms clamp could only remove a
-    // fraction of a 60-95ms phase error per confirmed onset, so a residual
-    // bias kept reappearing every cycle instead of being resolved. Correct
-    // most of the error in one shot instead.
-    const double maximumScoreCorrection =
-        0.060 / performanceSecondsPerScoreSecond;
-    scoreSeconds += std::clamp(
-        0.35 * scoreError,
-        -maximumScoreCorrection,
-        maximumScoreCorrection);
+    // VARIANT_F: partial per-onset correction (Variant B) only chips away at
+    // drift, so any bias built up during a run of onsets never fully clears
+    // -- it just gets smaller onset to onset. A fresh onset arriving after a
+    // real gap (a musical rest, or a stretch with no confirmed match) is not
+    // continuing an established beat the way back-to-back onsets are, so
+    // there is nothing to lose by trusting it completely: snap scoreSeconds
+    // exactly to it instead of nudging, zeroing out whatever drift
+    // accumulated during the gap. This is a generic, song-agnostic resync
+    // (driven by the performer's actual playing, not a hardcoded timestamp),
+    // so it works the same for any song without per-song configuration.
+    const double gapSinceLastTrustedSeconds = lastTrustedOnsetSample >= 0
+        ? static_cast<double>(onsetSample - lastTrustedOnsetSample)
+            / sampleRate
+        : std::numeric_limits<double>::max();
+    constexpr double resyncGapSeconds = 1.0;
+    if (gapSinceLastTrustedSeconds >= resyncGapSeconds)
+    {
+        // Guard: schedulePhrases() silently drops (never schedules, never
+        // fires a cancel event, never counted anywhere) any phrase whose
+        // sourceStartSeconds is already behind scoreSeconds by the time it's
+        // considered. An uncapped snap that happens to land past the next
+        // not-yet-played phrase would erase that phrase with no trace of it
+        // happening. Never resync past it -- catch up to at most its start,
+        // so it still gets a chance to fire (immediately, if needed) instead
+        // of vanishing.
+        double resyncTarget = trustedScore;
+        const auto& phrasesForGuard = song->getPhrases();
+        if (nextPhraseIndex >= 0
+            && nextPhraseIndex < static_cast<int>(phrasesForGuard.size()))
+        {
+            resyncTarget = std::min(
+                resyncTarget,
+                phrasesForGuard[static_cast<size_t>(nextPhraseIndex)]
+                        .sourceStartSeconds
+                    + 0.050);
+        }
+        scoreSeconds = std::max(scoreSeconds, resyncTarget);
+    }
+    else
+    {
+        // VARIANT_B: the previous 0.12 gain / 20ms clamp could only remove a
+        // fraction of a 60-95ms phase error per confirmed onset, so a
+        // residual bias kept reappearing every cycle instead of being
+        // resolved. Correct most of the error in one shot instead.
+        const double maximumScoreCorrection =
+            0.060 / performanceSecondsPerScoreSecond;
+        scoreSeconds += std::clamp(
+            0.35 * scoreError,
+            -maximumScoreCorrection,
+            maximumScoreCorrection);
+    }
 
     const double firstPhraseScore =
         song->getPhrases().empty()
