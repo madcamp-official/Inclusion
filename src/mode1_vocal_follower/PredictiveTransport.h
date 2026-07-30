@@ -142,8 +142,14 @@ private:
     int pendingReadIndex = 0;
     int pendingWriteIndex = 0;
 
-    double lookaheadSeconds = 0.250;
-    double commitHorizonSeconds = 0.080;
+    // VARIANT_E: a phrase's targetSample is frozen the moment it's reserved
+    // and never revisited by later phase corrections (only cancellation can
+    // remove it). A large lookahead freezes phrases far in advance, giving
+    // the free-running score more time to drift before the frozen target
+    // fires. Shrinking it means less time for uncorrected drift to bake in,
+    // at the cost of a smaller cancellation window on a chord mismatch.
+    double lookaheadSeconds = 0.120;
+    double commitHorizonSeconds = 0.050;
 };
 
 } // namespace mode1
