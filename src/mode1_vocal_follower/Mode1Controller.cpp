@@ -449,7 +449,7 @@ void Mode1Controller::processSubBlock(
         && !autoPlaying;
     if (activeV2Enabled)
         continuousChromaExtractor.processBlock(guitarInput, numSamples);
-    if (activeV2Enabled && onset)
+    if (activeV2Enabled && onset && (chordDetection.valid || onsetTracker.getLastOnsetStrength() >= 0.20f))
         introChromaAligner.noteFirstOnset(shadowOnsetSample);
     if (activeV2Enabled)
     {

@@ -80,6 +80,7 @@ void PredictiveTransport::applyIntroAlignment(
         return;
     const double performanceSeconds =
         static_cast<double>(sample) / sampleRate;
+    const double adjustedAlignedOffsetSeconds = alignedOffsetSeconds + 0.540;
     const double reactiveRate = performanceSecondsPerScoreSecond;
     double reactiveScoreAtAlignment = scoreSeconds;
     if (currentSample < sample
@@ -96,7 +97,7 @@ void PredictiveTransport::applyIntroAlignment(
         && harmonicMargin < 0.00020
         && std::abs(
             reactiveScoreAtAlignment
-                - (performanceSeconds - alignedOffsetSeconds)
+                - (performanceSeconds - adjustedAlignedOffsetSeconds)
                     / alignedPerformanceSecondsPerScoreSecond)
             * alignedPerformanceSecondsPerScoreSecond < 0.50;
 
@@ -108,7 +109,7 @@ void PredictiveTransport::applyIntroAlignment(
             alignedPerformanceSecondsPerScoreSecond);
     const double chromaScoreAtAlignment = std::max(
         0.0,
-        (performanceSeconds - alignedOffsetSeconds)
+        (performanceSeconds - adjustedAlignedOffsetSeconds)
             / performanceSecondsPerScoreSecond);
     if (reactivePhaseAvailable)
     {
@@ -121,8 +122,7 @@ void PredictiveTransport::applyIntroAlignment(
             std::abs(
                 reactiveScoreAtAlignment - chromaScoreAtAlignment)
             * performanceSecondsPerScoreSecond;
-        const double reactiveWeight =
-            phaseDisagreementSeconds > 0.150 ? 1.50 : 0.50;
+        const double reactiveWeight = 0.50;
         scoreSeconds = chromaScoreAtAlignment
             + reactiveWeight
                 * (reactiveScoreAtAlignment - chromaScoreAtAlignment);
@@ -589,9 +589,22 @@ void PredictiveTransport::schedulePhrases(
 
     while (nextPhraseIndex < static_cast<int>(phrases.size()))
     {
-        const double targetScore =
+        double targetScore =
             phrases[static_cast<std::size_t>(
                 nextPhraseIndex)].sourceStartSeconds;
+        const int anchorIdx =
+            phrases[static_cast<std::size_t>(
+                nextPhraseIndex)].anchorChordEventIndex;
+        if (anchorIdx >= 0 && song != nullptr)
+        {
+            const auto& chords = song->getChordTimeline();
+            if (static_cast<size_t>(anchorIdx) < chords.size())
+            {
+                targetScore = std::max(
+                    targetScore,
+                    chords[static_cast<size_t>(anchorIdx)].startSeconds);
+            }
+        }
         const double scoreLead = targetScore - scoreSeconds;
         const double performanceLead =
             scoreLead * performanceSecondsPerScoreSecond;

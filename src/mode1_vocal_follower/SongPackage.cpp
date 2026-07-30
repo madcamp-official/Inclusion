@@ -403,31 +403,31 @@ bool SongPackage::loadFromFile(const juce::File& packageFile, juce::String& erro
     phrases = std::move(loadedPhrases);
     if (!chordTimeline.empty())
     {
-        int latestPlayableChord = -1;
-        size_t chordCursor = 0;
         for (auto& phrase : phrases)
         {
-            while (chordCursor < chordTimeline.size()
-                && chordTimeline[chordCursor].startSeconds
-                    <= phrase.sourceStartSeconds + 1.0e-6)
+            int bestChordIndex = -1;
+            double minDistance = std::numeric_limits<double>::max();
+            for (size_t chordIdx = 0; chordIdx < chordTimeline.size(); ++chordIdx)
             {
-                const auto chord =
-                    chordTimeline[chordCursor].chord.trim().toUpperCase();
-                if (chord.isNotEmpty()
-                    && chord != "N"
-                    && chord != "N.C.")
-                    latestPlayableChord =
-                        static_cast<int>(chordCursor);
-                ++chordCursor;
+                const auto chord = chordTimeline[chordIdx].chord.trim().toUpperCase();
+                if (chord.isEmpty() || chord == "N" || chord == "N.C.")
+                    continue;
+                const double dist = std::abs(
+                    chordTimeline[chordIdx].startSeconds - phrase.sourceStartSeconds);
+                if (dist < minDistance && dist <= 0.350)
+                {
+                    minDistance = dist;
+                    bestChordIndex = static_cast<int>(chordIdx);
+                }
             }
-            phrase.anchorChordEventIndex = latestPlayableChord;
-            if (latestPlayableChord >= 0)
+            if (bestChordIndex >= 0)
             {
+                phrase.anchorChordEventIndex = bestChordIndex;
                 phrase.chordRelativeStartSeconds = std::max(
                     0.0,
                     phrase.sourceStartSeconds
                         - chordTimeline[static_cast<size_t>(
-                            latestPlayableChord)].startSeconds);
+                            bestChordIndex)].startSeconds);
             }
         }
     }

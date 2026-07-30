@@ -104,13 +104,13 @@ public:
     }
 
 private:
-    static constexpr int requiredConsecutiveMismatches = 2;
+    static constexpr int requiredConsecutiveMismatches = 1;
     // GuitarChordTracker already rejects weak absolute template scores via
     // ChordDetection::valid. Its remaining best-vs-second margin is normally
     // only a few thousandths even for a clean synthetic triad.
     static constexpr float minimumConfidence = 0.004f;
     static constexpr float minimumCompatibleSimilarity = 0.10f;
-    static constexpr double minimumMismatchDurationSeconds = 0.350;
+    static constexpr double minimumMismatchDurationSeconds = 0.120;
 
     bool paused = false;
     int consecutiveMismatches = 0;

@@ -146,13 +146,9 @@ int main(int argc, char* argv[])
     mode1::ChordMismatchGate mismatchGate;
     passed &= require(
         mismatchGate.observe(0, 7, 0.50f)
-            == mode1::ChordMismatchDecision::none,
-        "one wrong chord must not pause on a possible FFT mistake");
-    passed &= require(
-        mismatchGate.observe(0, 7, 0.50f)
             == mode1::ChordMismatchDecision::pause
             && mismatchGate.isPaused(),
-        "two consecutive confident mismatches should pause");
+        "one confident mismatch should pause immediately");
     passed &= require(
         mismatchGate.observe(0, 7, 0.50f)
             == mode1::ChordMismatchDecision::none
@@ -166,15 +162,8 @@ int main(int argc, char* argv[])
     mismatchGate.reset();
     passed &= require(
         mismatchGate.observe(0, 7, 0.50f, -1.0f, 1.00)
-            == mode1::ChordMismatchDecision::none
-        && mismatchGate.observe(0, 7, 0.50f, -1.0f, 1.20)
-            == mode1::ChordMismatchDecision::none
-        && !mismatchGate.isPaused(),
-        "rapid arpeggio classifications must not satisfy the mismatch hold");
-    passed &= require(
-        mismatchGate.observe(0, 7, 0.50f, -1.0f, 1.40)
             == mode1::ChordMismatchDecision::pause,
-        "a stable wrong chord lasting 350 ms should pause");
+        "a single confident wrong chord should pause");
     mismatchGate.reset();
     passed &= require(
         mismatchGate.observe(0, 7, 0.50f, 0.60f)
