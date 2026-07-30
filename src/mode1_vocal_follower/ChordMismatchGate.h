@@ -91,20 +91,20 @@ public:
         if (consecutiveMismatches < requiredConsecutiveMismatches)
             return ChordMismatchDecision::none;
 
-        // The duration debounce only means something when the mismatch
-        // streak spans more than one observe() call: with the threshold at
-        // 1, this same call both starts the streak and satisfies it, so
-        // observationTimeSeconds - firstMismatchTimeSeconds is always
-        // exactly zero and the gate would silently swallow every mismatch.
-        if constexpr (requiredConsecutiveMismatches > 1)
+        // observe() is called every audio block with a real timestamp
+        // (Mode1Controller drives it once per block, not once per onset),
+        // so this correctly requires the SAME mismatch to keep showing up
+        // across multiple blocks spanning minimumMismatchDurationSeconds
+        // before pausing -- filtering a single block's transient FFT
+        // misread. It only degenerates to "always zero elapsed" for a
+        // caller that issues one isolated observe() call, which is not how
+        // production drives this gate.
+        if (observationTimeSeconds >= 0.0
+            && firstMismatchTimeSeconds >= 0.0
+            && observationTimeSeconds - firstMismatchTimeSeconds
+                < minimumMismatchDurationSeconds)
         {
-            if (observationTimeSeconds >= 0.0
-                && firstMismatchTimeSeconds >= 0.0
-                && observationTimeSeconds - firstMismatchTimeSeconds
-                    < minimumMismatchDurationSeconds)
-            {
-                return ChordMismatchDecision::none;
-            }
+            return ChordMismatchDecision::none;
         }
 
         paused = true;

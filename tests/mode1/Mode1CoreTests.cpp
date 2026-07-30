@@ -162,8 +162,16 @@ int main(int argc, char* argv[])
     mismatchGate.reset();
     passed &= require(
         mismatchGate.observe(0, 7, 0.50f, -1.0f, 1.00)
+            == mode1::ChordMismatchDecision::none,
+        "a wrong chord observed for the first time should wait, not pause instantly");
+    passed &= require(
+        mismatchGate.observe(0, 7, 0.50f, -1.0f, 1.05)
+            == mode1::ChordMismatchDecision::none,
+        "the same wrong chord within the debounce window should still wait");
+    passed &= require(
+        mismatchGate.observe(0, 7, 0.50f, -1.0f, 1.13)
             == mode1::ChordMismatchDecision::pause,
-        "a single confident wrong chord should pause");
+        "the same wrong chord persisting past the debounce window should pause");
     mismatchGate.reset();
     passed &= require(
         mismatchGate.observe(0, 7, 0.50f, 0.60f)
