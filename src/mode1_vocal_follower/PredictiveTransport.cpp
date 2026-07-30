@@ -734,7 +734,20 @@ void PredictiveTransport::processBlock(
                 // phase and continue; observe() intentionally ignores normal
                 // updates after intro lock and therefore cannot perform this
                 // one required recovery itself.
-                scoreSeconds = observedScoreSeconds;
+                // VARIANT_I: scoreSeconds is frozen (not advanced) for the
+                // whole hold, so it already sits at the score position where
+                // the pause began. observedScoreSeconds comes from the
+                // separate reactive scheduler's own chord-event tracking,
+                // which can still be behind that frozen position right at
+                // the moment of resume. Snapping to it unconditionally was
+                // rewinding the transport backwards by several seconds
+                // (measured: 60.13s -> 55.54s at one resume), which then
+                // played several already-passed phrases back-to-back in a
+                // compressed burst -- exactly the "rushed after the pause"
+                // symptom. Never move backward, matching the same rule
+                // resumeFromChordMismatch() already follows for the other
+                // hold path.
+                scoreSeconds = std::max(scoreSeconds, observedScoreSeconds);
                 phaseErrorSeconds = 0.0;
                 lastObservationSample = clamped;
                 lastObservedScoreSeconds = observedScoreSeconds;
