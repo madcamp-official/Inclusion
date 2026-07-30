@@ -33,3 +33,6 @@ assets/midi_to_split/output/
 *.ppk
 **/__pycache__/
 *.py[cod]
+
+# macOS
+.DS_Store
