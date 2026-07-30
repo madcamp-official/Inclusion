@@ -4,6 +4,7 @@
 #include <juce_gui_extra/juce_gui_extra.h>
 
 #include "mode2_guitar_vocoder/Mode2Controller.h"
+#include "ui/GuitaruLookAndFeel.h"
 #include "ui/mode2/Mode2Screen.h"
 
 #include <atomic>
@@ -36,6 +37,7 @@ public:
 
 private:
     void showMode2();
+    void showModeSelection();
     void showAudioSettings();
     void updateAudioDeviceStatus();
     void changeListenerCallback(juce::ChangeBroadcaster* source) override;
@@ -51,8 +53,12 @@ private:
     void updateLatencyInfo();
     void selectPitchShifterBackend(PitchShifterEngine::Backend backend);
 
-    juce::TextButton mode1Button { "Mode 1: Vocal Follower" };
-    juce::TextButton mode2Button { "Mode 2: Guitar Vocoder" };
+    GuitaruLookAndFeel guitaruLookAndFeel;
+    juce::Image logoImage;
+    juce::Image mascotImage;
+
+    juce::TextButton mode1Button;
+    juce::TextButton mode2Button;
     juce::TextButton audioSettingsButton;
     juce::Label statusLabel;
 

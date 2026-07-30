@@ -31,12 +31,18 @@ public:
     // 선택한 백엔드로 컨트롤러를 재초기화한다.
     std::function<void(PitchShifterEngine::Backend)> onPitchShifterBackendChanged;
 
+    // 모드 선택 화면으로 돌아간다. 오디오 처리/녹음 정리는 MainComponent가 담당한다.
+    std::function<void()> onBackRequested;
+
     // 하드웨어 왕복 지연을 화면에 표시한다. 블루투스 출력(에어팟 등)은 여기서 수백 ms로
     // 드러나므로, 연주감을 평가할 수 있는 환경인지 바로 판단할 수 있다.
     void setLatencyInfo(double inputMs, double outputMs, double processingMs);
+    void setRecordingState(bool recording);
+    void showOverview();
 
 private:
     void timerCallback() override;
+    void setDetailPageVisible(bool shouldShowDetails);
     static juce::String midiToDisplayString(float midi);
 
     Mode2Controller& controller;
@@ -47,6 +53,9 @@ private:
     juce::Label followLabel;
     double followProgress = 0.0;
     juce::ProgressBar followProgressBar { followProgress };
+    juce::TextButton backButton;
+    juce::TextButton detailsButton;
+    bool detailPageVisible = false;
     juce::TextButton calibrateButton { juce::String(juce::CharPointer_UTF8("캘리브레이션 시작")) };
     juce::TextButton recordButton;
 
@@ -60,6 +69,9 @@ private:
     juce::ProgressBar vocalLevelBar { vocalLevelProgress };
 
     juce::Label channelMapLabel;
+    juce::Label guitarChannelLabel;
+    juce::Label vocalChannelLabel;
+    juce::Label roomChannelLabel;
     juce::ComboBox guitarChannelBox;
     juce::ComboBox vocalChannelBox;
 
@@ -69,6 +81,7 @@ private:
     juce::ComboBox pitchShifterBox;
 
     juce::Label outputLevelLabel;
+    juce::Label outputDiagnosticsLabel;
     double outputLevelProgress = 0.0;
     juce::ProgressBar outputLevelBar { outputLevelProgress };
 

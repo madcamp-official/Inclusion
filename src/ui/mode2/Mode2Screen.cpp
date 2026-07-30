@@ -1,5 +1,6 @@
 #include "Mode2Screen.h"
 #include "params/Mode2Params.h"
+#include "ui/GuitaruLookAndFeel.h"
 
 #include <cmath>
 
@@ -22,6 +23,21 @@ namespace
 Mode2Screen::Mode2Screen(Mode2Controller& controllerIn)
     : controller(controllerIn)
 {
+    backButton.setButtonText(utf8("←  모드 선택"));
+    backButton.setColour(juce::TextButton::buttonColourId, guitaru::paperDark());
+    backButton.setColour(juce::TextButton::textColourOffId, guitaru::green());
+    backButton.onClick = [this]
+    {
+        if (onBackRequested)
+            onBackRequested();
+    };
+    addAndMakeVisible(backButton);
+
+    detailsButton.setColour(juce::TextButton::buttonColourId, guitaru::paperDark());
+    detailsButton.setColour(juce::TextButton::textColourOffId, guitaru::green());
+    detailsButton.onClick = [this] { setDetailPageVisible(! detailPageVisible); };
+    addAndMakeVisible(detailsButton);
+
     guitarPitchLabel.setJustificationType(juce::Justification::centredLeft);
     vocalPitchLabel.setJustificationType(juce::Justification::centredLeft);
     correctedPitchLabel.setJustificationType(juce::Justification::centredLeft);
@@ -40,10 +56,20 @@ Mode2Screen::Mode2Screen(Mode2Controller& controllerIn)
     addAndMakeVisible(guitarLevelBar);
     addAndMakeVisible(vocalLevelBar);
 
-    channelMapLabel.setText(utf8("입력 채널  기타 / 목소리 / 녹음에 함께 담을 것(스피커 앞 마이크)"),
-                            juce::dontSendNotification);
+    channelMapLabel.setText(utf8("입력 채널 선택"), juce::dontSendNotification);
     channelMapLabel.setJustificationType(juce::Justification::centredLeft);
     addAndMakeVisible(channelMapLabel);
+
+    const auto prepareChannelLabel = [this](juce::Label& label, const char* text)
+    {
+        label.setName("channel-heading");
+        label.setText(utf8(text), juce::dontSendNotification);
+        label.setJustificationType(juce::Justification::centredLeft);
+        addAndMakeVisible(label);
+    };
+    prepareChannelLabel(guitarChannelLabel, "기타 입력");
+    prepareChannelLabel(vocalChannelLabel, "목소리 입력");
+    prepareChannelLabel(roomChannelLabel, "녹음용 마이크");
 
     auto notifyChannelChange = [this]
     {
@@ -63,7 +89,7 @@ Mode2Screen::Mode2Screen(Mode2Controller& controllerIn)
     };
     addAndMakeVisible(roomChannelBox);
 
-    pitchShifterLabel.setText(utf8("피치 시프터 A/B"), juce::dontSendNotification);
+    pitchShifterLabel.setText(utf8("피치 시프터 선택"), juce::dontSendNotification);
     pitchShifterLabel.setJustificationType(juce::Justification::centredLeft);
     addAndMakeVisible(pitchShifterLabel);
     pitchShifterBox.addItem(utf8("Rubber Band R3 (고음질)"), 1);
@@ -101,8 +127,22 @@ Mode2Screen::Mode2Screen(Mode2Controller& controllerIn)
     addAndMakeVisible(pitchShifterBox);
 
     outputLevelLabel.setJustificationType(juce::Justification::centredLeft);
+    outputDiagnosticsLabel.setJustificationType(juce::Justification::centredLeft);
     addAndMakeVisible(outputLevelLabel);
+    addAndMakeVisible(outputDiagnosticsLabel);
     addAndMakeVisible(outputLevelBar);
+
+    const auto prepareValueBox = [](juce::Slider& slider)
+    {
+        slider.setTextBoxStyle(juce::Slider::TextBoxRight, false, 68, 26);
+        slider.setColour(juce::Slider::textBoxTextColourId, guitaru::green());
+    };
+    prepareValueBox(targetOctaveSlider);
+    prepareValueBox(glideSlider);
+    prepareValueBox(vocalGainSlider);
+    prepareValueBox(outputVolumeSlider);
+    prepareValueBox(noiseGateSlider);
+    prepareValueBox(outputTripSlider);
 
     targetOctaveLabel.setText(utf8("목표 옥타브 이동 (0 = 기타 음 그대로)"), juce::dontSendNotification);
     targetOctaveLabel.setJustificationType(juce::Justification::centredLeft);
@@ -226,24 +266,86 @@ Mode2Screen::Mode2Screen(Mode2Controller& controllerIn)
     addAndMakeVisible(resetCalibrationButton);
 
     recordButton.setButtonText(utf8("녹음 시작"));
+    recordButton.setColour(juce::TextButton::buttonColourId, guitaru::red());
     recordButton.onClick = [this]
     {
         if (! onToggleRecording)
             return;
-        const bool recording = onToggleRecording();
-        recordButton.setButtonText(recording ? utf8("녹음 중지 (녹음 중...)") : utf8("녹음 시작"));
-        recordButton.setColour(juce::TextButton::buttonColourId,
-                               recording ? juce::Colours::darkred
-                                         : getLookAndFeel().findColour(juce::TextButton::buttonColourId));
+        setRecordingState(onToggleRecording());
     };
     addAndMakeVisible(recordButton);
 
+    guitarPitchLabel.setFont(guitaru::chalkFont(32.0f, true));
+    vocalPitchLabel.setFont(guitaru::chalkFont(32.0f, true));
+    correctedPitchLabel.setFont(guitaru::chalkFont(23.0f, true));
+    followLabel.setFont(guitaru::chalkFont(20.0f, true));
+    outputDiagnosticsLabel.setFont(guitaru::chalkFont(19.0f, true));
+    calibrateButton.setColour(juce::TextButton::buttonColourId, guitaru::green());
+    resetCalibrationButton.setColour(juce::TextButton::buttonColourId, guitaru::paperDark());
+    resetCalibrationButton.setColour(juce::TextButton::textColourOffId, guitaru::green());
+
+    setDetailPageVisible(false);
     startTimerHz(15);
 }
 
 Mode2Screen::~Mode2Screen()
 {
     stopTimer();
+}
+
+void Mode2Screen::setDetailPageVisible(bool shouldShowDetails)
+{
+    detailPageVisible = shouldShowDetails;
+    detailsButton.setButtonText(detailPageVisible ? utf8("←  기본 화면")
+                                                  : utf8("상세 설정  →"));
+
+    // 기본 화면: 사용자가 연주 중 자주 보는 것만 남긴다.
+    guitarPitchLabel.setVisible(! detailPageVisible);
+    vocalPitchLabel.setVisible(! detailPageVisible);
+    guitarLevelLabel.setVisible(! detailPageVisible);
+    guitarLevelBar.setVisible(! detailPageVisible);
+    vocalLevelLabel.setVisible(! detailPageVisible);
+    vocalLevelBar.setVisible(! detailPageVisible);
+    outputLevelLabel.setVisible(! detailPageVisible);
+    outputLevelBar.setVisible(! detailPageVisible);
+    outputDiagnosticsLabel.setVisible(detailPageVisible);
+    pitchShifterLabel.setVisible(! detailPageVisible);
+    pitchShifterBox.setVisible(! detailPageVisible);
+    channelMapLabel.setVisible(! detailPageVisible);
+    guitarChannelLabel.setVisible(! detailPageVisible);
+    vocalChannelLabel.setVisible(! detailPageVisible);
+    roomChannelLabel.setVisible(! detailPageVisible);
+    guitarChannelBox.setVisible(! detailPageVisible);
+    vocalChannelBox.setVisible(! detailPageVisible);
+    roomChannelBox.setVisible(! detailPageVisible);
+    targetOctaveLabel.setVisible(! detailPageVisible);
+    targetOctaveSlider.setVisible(! detailPageVisible);
+    vocalGainLabel.setVisible(! detailPageVisible);
+    vocalGainSlider.setVisible(! detailPageVisible);
+    outputVolumeLabel.setVisible(! detailPageVisible);
+    outputVolumeSlider.setVisible(! detailPageVisible);
+    howlGuardButton.setVisible(! detailPageVisible);
+
+    // 상세 화면: 기능은 유지하되 평소 화면에서 시선을 빼앗지 않게 분리한다.
+    correctedPitchLabel.setVisible(detailPageVisible);
+    followLabel.setVisible(detailPageVisible);
+    followProgressBar.setVisible(detailPageVisible);
+    glideLabel.setVisible(detailPageVisible);
+    glideSlider.setVisible(detailPageVisible);
+    bleedCancelButton.setVisible(detailPageVisible);
+    bleedCancelStatusLabel.setVisible(detailPageVisible);
+    noiseGateButton.setVisible(detailPageVisible);
+    noiseGateSlider.setVisible(detailPageVisible);
+    notchLabel.setVisible(detailPageVisible);
+    outputTripLabel.setVisible(detailPageVisible);
+    outputTripSlider.setVisible(detailPageVisible);
+    latencyLabel.setVisible(detailPageVisible);
+    calibrateButton.setVisible(detailPageVisible);
+    resetCalibrationButton.setVisible(detailPageVisible);
+    recordButton.setVisible(detailPageVisible);
+
+    resized();
+    repaint();
 }
 
 void Mode2Screen::setAvailableInputChannels(int numChannels, int guitarChannel, int vocalChannel,
@@ -280,6 +382,18 @@ void Mode2Screen::setLatencyInfo(double inputMs, double outputMs, double process
     if (total > 60.0)
         text += utf8("   ← 연주감 평가엔 부적합");
     latencyLabel.setText(text, juce::dontSendNotification);
+}
+
+void Mode2Screen::setRecordingState(bool recording)
+{
+    recordButton.setButtonText(recording ? utf8("녹음 중지 (녹음 중...)") : utf8("녹음 시작"));
+    recordButton.setColour(juce::TextButton::buttonColourId,
+                           recording ? juce::Colours::darkred : guitaru::red());
+}
+
+void Mode2Screen::showOverview()
+{
+    setDetailPageVisible(false);
 }
 
 juce::String Mode2Screen::midiToDisplayString(float midi)
@@ -335,14 +449,16 @@ void Mode2Screen::timerCallback()
                              juce::dontSendNotification);
 
     outputLevelProgress = levelToMeterValue(state.outputLevel);
-    outputLevelLabel.setText(utf8("출력 레벨 ") + juce::String(juce::roundToInt(outputLevelProgress * 100.0)) + "%"
-                                 + utf8("   게인 ") + juce::String(state.outputGain, 2)
-                                 + utf8("   하울링억제 ") + juce::String(state.feedbackDuckGain, 2)
-                                 + utf8("   게이트 ") + juce::String(state.noiseGateGain, 2)
-                                 + (state.noiseGateOpen ? utf8(" (열림)") : utf8(" (닫힘)"))
-                                 + utf8("   트립 ") + juce::String(state.outputTripGain, 2)
-                                 + (state.outputTripActive ? utf8(" ⚠") : juce::String()),
-                              juce::dontSendNotification);
+    outputLevelLabel.setText(utf8("출력 레벨 ")
+                                 + juce::String(juce::roundToInt(outputLevelProgress * 100.0)) + "%",
+                             juce::dontSendNotification);
+    outputDiagnosticsLabel.setText(utf8("게인 ") + juce::String(state.outputGain, 2)
+                                       + utf8("   하울링 억제 ") + juce::String(state.feedbackDuckGain, 2)
+                                       + utf8("   게이트 ") + juce::String(state.noiseGateGain, 2)
+                                       + (state.noiseGateOpen ? utf8(" (열림)") : utf8(" (닫힘)"))
+                                       + utf8("   트립 ") + juce::String(state.outputTripGain, 2)
+                                       + (state.outputTripActive ? utf8(" ⚠") : juce::String()),
+                                   juce::dontSendNotification);
 
     juce::String notchText = utf8("하울링 노치 ") + juce::String(state.notchCount) + "/"
                              + juce::String(FeedbackNotchSuppressor::maxNotches);
@@ -371,68 +487,186 @@ void Mode2Screen::timerCallback()
 
 void Mode2Screen::paint(juce::Graphics& g)
 {
-    g.fillAll(getLookAndFeel().findColour(juce::ResizableWindow::backgroundColourId));
+    guitaru::drawPaperTexture(g, getLocalBounds(), 4271);
+
+    auto area = getLocalBounds().reduced(24);
+    auto header = area.removeFromTop(64);
+    area.removeFromTop(12);
+
+    g.setColour(guitaru::green());
+    g.setFont(guitaru::chalkFont(37.0f, true));
+    g.drawText("guitaru", header.removeFromLeft(145), juce::Justification::centredLeft);
+    g.setColour(guitaru::red());
+    g.fillEllipse(static_cast<float>(header.getX() - 23),
+                  static_cast<float>(header.getCentreY() - 3), 6.0f, 6.0f);
+
+    g.setColour(guitaru::inkMuted());
+    g.setFont(guitaru::chalkFont(20.0f, true));
+    g.drawText(utf8("GUITAR VOCODER · LIVE"),
+               header.removeFromLeft(260), juce::Justification::centredLeft);
+
+    auto live = header.removeFromRight(98).reduced(4, 15).toFloat();
+    guitaru::drawChalkFill(g, live, guitaru::bluePale(),
+                           live.getHeight() * 0.5f, 9031);
+    g.setColour(guitaru::green());
+    g.drawRoundedRectangle(live, live.getHeight() * 0.5f, 1.4f);
+    g.setFont(guitaru::chalkFont(18.0f, true));
+    g.drawText(utf8("●  듣는 중"), live.toNearestInt(), juce::Justification::centred);
+
+    const int gap = 16;
+    const int topHeight = juce::jmin(320, area.getHeight() * 48 / 100);
+    auto top = area.removeFromTop(topHeight);
+    area.removeFromTop(gap);
+    const int leftWidth = (top.getWidth() - gap) * 57 / 100;
+    auto topLeftCard = top.removeFromLeft(leftWidth);
+    top.removeFromLeft(gap);
+    auto topRightCard = top;
+
+    auto bottomLeftCard = area.removeFromLeft(leftWidth);
+    area.removeFromLeft(gap);
+    auto bottomRightCard = area;
+
+    guitaru::drawCrayonCard(g, topLeftCard.toFloat());
+    guitaru::drawCrayonCard(g, topRightCard.toFloat());
+    guitaru::drawCrayonCard(g, bottomLeftCard.toFloat());
+    guitaru::drawCrayonCard(g, bottomRightCard.toFloat());
+
+    const auto title = [&g](juce::String text, juce::Rectangle<int> card)
+    {
+        g.setColour(guitaru::green());
+        g.setFont(guitaru::chalkFont(27.0f, true));
+        g.drawText(text, card.reduced(20).removeFromTop(32), juce::Justification::centredLeft);
+    };
+    if (! detailPageVisible)
+    {
+        title(utf8("지금 따라가는 음"), topLeftCard);
+        title(utf8("입출력 신호"), topRightCard);
+        title(utf8("재생 설정"), bottomLeftCard);
+        title(utf8("안전하게 듣기"), bottomRightCard);
+
+        auto hint = bottomRightCard.reduced(22);
+        hint.removeFromTop(102);
+        g.setColour(guitaru::inkMuted());
+        g.setFont(guitaru::chalkFont(20.0f));
+        g.drawFittedText(utf8("스피커로 모니터링할 때만 켜세요.\n노이즈 게이트와 트립 임계값은 상세 설정에 있어요."),
+                         hint.removeFromTop(58), juce::Justification::centredLeft, 2);
+    }
+    else
+    {
+        title(utf8("보정 결과와 추종도"), topLeftCard);
+        title(utf8("보정 반응"), topRightCard);
+        title(utf8("입력 신호 정리"), bottomLeftCard);
+        title(utf8("보호 · 캘리브레이션 · 녹음"), bottomRightCard);
+    }
 }
 
 void Mode2Screen::resized()
 {
-    auto area = getLocalBounds().reduced(20);
-    guitarPitchLabel.setBounds(area.removeFromTop(30));
-    vocalPitchLabel.setBounds(area.removeFromTop(30));
-    correctedPitchLabel.setBounds(area.removeFromTop(30));
-    area.removeFromTop(10);
-    guitarLevelLabel.setBounds(area.removeFromTop(20));
-    guitarLevelBar.setBounds(area.removeFromTop(14));
-    area.removeFromTop(6);
-    vocalLevelLabel.setBounds(area.removeFromTop(20));
-    vocalLevelBar.setBounds(area.removeFromTop(14));
-    area.removeFromTop(8);
-    channelMapLabel.setBounds(area.removeFromTop(20));
+    auto area = getLocalBounds().reduced(24);
+    auto header = area.removeFromTop(64);
+    header.removeFromRight(106);
+    detailsButton.setBounds(header.removeFromRight(132).reduced(2, 9));
+    header.removeFromRight(8);
+    backButton.setBounds(header.removeFromRight(132).reduced(2, 9));
+    area.removeFromTop(12);
+
+    const int gap = 16;
+    const int topHeight = juce::jmin(320, area.getHeight() * 48 / 100);
+    auto top = area.removeFromTop(topHeight);
+    area.removeFromTop(gap);
+    const int leftWidth = (top.getWidth() - gap) * 57 / 100;
+    auto topLeft = top.removeFromLeft(leftWidth).reduced(20);
+    top.removeFromLeft(gap);
+    auto topRight = top.reduced(20);
+    auto bottomLeft = area.removeFromLeft(leftWidth).reduced(20);
+    area.removeFromLeft(gap);
+    auto bottomRight = area.reduced(20);
+
+    if (! detailPageVisible)
     {
-        // 세 개를 한 줄에 넣는다. 줄을 따로 만들면 아래 버튼들이 창 밖으로 밀린다.
-        auto row = area.removeFromTop(26);
-        const int third = row.getWidth() / 3;
-        guitarChannelBox.setBounds(row.removeFromLeft(third));
-        vocalChannelBox.setBounds(row.removeFromLeft(third).reduced(6, 0));
-        roomChannelBox.setBounds(row.reduced(6, 0));
+        topLeft.removeFromTop(42);
+        guitarPitchLabel.setBounds(topLeft.removeFromTop(56));
+        topLeft.removeFromTop(12);
+        vocalPitchLabel.setBounds(topLeft.removeFromTop(56));
+
+        topRight.removeFromTop(48);
+        guitarLevelLabel.setBounds(topRight.removeFromTop(21));
+        guitarLevelBar.setBounds(topRight.removeFromTop(13));
+        topRight.removeFromTop(4);
+        vocalLevelLabel.setBounds(topRight.removeFromTop(21));
+        vocalLevelBar.setBounds(topRight.removeFromTop(13));
+        topRight.removeFromTop(4);
+        outputLevelLabel.setBounds(topRight.removeFromTop(21));
+        outputLevelBar.setBounds(topRight.removeFromTop(13));
+        topRight.removeFromTop(13);
+        pitchShifterLabel.setBounds(topRight.removeFromTop(20));
+        pitchShifterBox.setBounds(topRight.removeFromTop(30));
+
+        bottomLeft.removeFromTop(48);
+        channelMapLabel.setBounds(bottomLeft.removeFromTop(20));
+        bottomLeft.removeFromTop(8);
+        {
+            auto headings = bottomLeft.removeFromTop(22);
+            const int third = headings.getWidth() / 3;
+            guitarChannelLabel.setBounds(headings.removeFromLeft(third).reduced(3, 0));
+            vocalChannelLabel.setBounds(headings.removeFromLeft(third).reduced(5, 0));
+            roomChannelLabel.setBounds(headings.reduced(3, 0));
+        }
+        {
+            auto row = bottomLeft.removeFromTop(32);
+            const int third = row.getWidth() / 3;
+            guitarChannelBox.setBounds(row.removeFromLeft(third).reduced(2, 0));
+            vocalChannelBox.setBounds(row.removeFromLeft(third).reduced(4, 0));
+            roomChannelBox.setBounds(row.reduced(2, 0));
+        }
+        bottomLeft.removeFromTop(28);
+        const auto placeOverviewSlider = [&bottomLeft](juce::Label& label, juce::Slider& slider)
+        {
+            label.setBounds(bottomLeft.removeFromTop(20));
+            slider.setBounds(bottomLeft.removeFromTop(33));
+            bottomLeft.removeFromTop(8);
+        };
+        placeOverviewSlider(targetOctaveLabel, targetOctaveSlider);
+        placeOverviewSlider(vocalGainLabel, vocalGainSlider);
+        placeOverviewSlider(outputVolumeLabel, outputVolumeSlider);
+
+        bottomRight.removeFromTop(54);
+        howlGuardButton.setBounds(bottomRight.removeFromTop(44));
+        return;
     }
-    area.removeFromTop(8);
-    pitchShifterLabel.setBounds(area.removeFromTop(20));
-    pitchShifterBox.setBounds(area.removeFromTop(28));
-    area.removeFromTop(8);
-    outputLevelLabel.setBounds(area.removeFromTop(20));
-    outputLevelBar.setBounds(area.removeFromTop(14));
-    area.removeFromTop(8);
-    targetOctaveLabel.setBounds(area.removeFromTop(18));
-    targetOctaveSlider.setBounds(area.removeFromTop(24));
-    glideLabel.setBounds(area.removeFromTop(18));
-    glideSlider.setBounds(area.removeFromTop(24));
-    vocalGainLabel.setBounds(area.removeFromTop(18));
-    vocalGainSlider.setBounds(area.removeFromTop(24));
-    outputVolumeLabel.setBounds(area.removeFromTop(18));
-    outputVolumeSlider.setBounds(area.removeFromTop(24));
-    area.removeFromTop(4);
-    bleedCancelButton.setBounds(area.removeFromTop(22));
-    bleedCancelStatusLabel.setBounds(area.removeFromTop(18));
-    area.removeFromTop(4);
-    noiseGateButton.setBounds(area.removeFromTop(22));
-    noiseGateSlider.setBounds(area.removeFromTop(24));
-    area.removeFromTop(8);
-    followLabel.setBounds(area.removeFromTop(22));
-    followProgressBar.setBounds(area.removeFromTop(16));
-    area.removeFromTop(8);
-    latencyLabel.setBounds(area.removeFromTop(20));
-    notchLabel.setBounds(area.removeFromTop(20));
-    howlGuardButton.setBounds(area.removeFromTop(26));
-    area.removeFromTop(4);
-    outputTripLabel.setBounds(area.removeFromTop(18));
-    outputTripSlider.setBounds(area.removeFromTop(24));
-    area.removeFromTop(8);
+
+    topLeft.removeFromTop(42);
+    correctedPitchLabel.setBounds(topLeft.removeFromTop(58));
+    topLeft.removeFromTop(17);
+    followLabel.setBounds(topLeft.removeFromTop(24));
+    followProgressBar.setBounds(topLeft.removeFromTop(18));
+
+    topRight.removeFromTop(44);
+    glideLabel.setBounds(topRight.removeFromTop(24));
+    glideSlider.setBounds(topRight.removeFromTop(38));
+    topRight.removeFromTop(18);
+    latencyLabel.setBounds(topRight.removeFromTop(48));
+
+    bottomLeft.removeFromTop(42);
+    bleedCancelButton.setBounds(bottomLeft.removeFromTop(36));
+    bleedCancelStatusLabel.setBounds(bottomLeft.removeFromTop(42));
+    bottomLeft.removeFromTop(16);
+    noiseGateButton.setBounds(bottomLeft.removeFromTop(34));
+    noiseGateSlider.setBounds(bottomLeft.removeFromTop(38));
+
+    bottomRight.removeFromTop(42);
+    outputDiagnosticsLabel.setBounds(bottomRight.removeFromTop(48));
+    bottomRight.removeFromTop(6);
+    notchLabel.setBounds(bottomRight.removeFromTop(32));
+    bottomRight.removeFromTop(10);
+    outputTripLabel.setBounds(bottomRight.removeFromTop(24));
+    outputTripSlider.setBounds(bottomRight.removeFromTop(38));
+    bottomRight.removeFromTop(26);
     {
-        auto row = area.removeFromTop(34);
+        auto row = bottomRight.removeFromTop(44);
         const int third = row.getWidth() / 3;
-        calibrateButton.setBounds(row.removeFromLeft(third));
-        resetCalibrationButton.setBounds(row.removeFromLeft(third).reduced(6, 0));
-        recordButton.setBounds(row.reduced(6, 0));
+        calibrateButton.setBounds(row.removeFromLeft(third).reduced(2, 0));
+        resetCalibrationButton.setBounds(row.removeFromLeft(third).reduced(4, 0));
+        recordButton.setBounds(row.reduced(2, 0));
     }
 }

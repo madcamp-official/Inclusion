@@ -1,5 +1,6 @@
 #include "MainComponent.h"
 #include "params/Mode2Params.h"
+#include "BinaryData.h"
 
 #include <algorithm>
 #include <cmath>
@@ -16,10 +17,89 @@ namespace
     {
         return juce::String(juce::CharPointer_UTF8(text));
     }
+
+    // 레퍼런스 이미지의 흰 종이는 앱의 종이 질감과 경계가 생기므로 걷어내고
+    // 크레용 획의 원래 색만 불투명하게 남긴다.
+    void removeImagePaper(juce::Image& image)
+    {
+        if (! image.isValid())
+            return;
+
+        juce::Image transparent(juce::Image::ARGB, image.getWidth(), image.getHeight(), true);
+        juce::Image::BitmapData source(image, juce::Image::BitmapData::readOnly);
+        juce::Image::BitmapData destination(transparent, juce::Image::BitmapData::writeOnly);
+
+        for (int y = 0; y < image.getHeight(); ++y)
+        {
+            for (int x = 0; x < image.getWidth(); ++x)
+            {
+                const auto colour = source.getPixelColour(x, y);
+                const int darkest = juce::jmin(static_cast<int>(colour.getRed()),
+                                               juce::jmin(static_cast<int>(colour.getGreen()),
+                                                          static_cast<int>(colour.getBlue())));
+                const int lightest = juce::jmax(static_cast<int>(colour.getRed()),
+                                                juce::jmax(static_cast<int>(colour.getGreen()),
+                                                           static_cast<int>(colour.getBlue())));
+                const int signal = juce::jmax(255 - lightest, (lightest - darkest) * 2);
+                if (signal < 20)
+                    continue;
+
+                const auto alpha = static_cast<juce::uint8>(
+                    juce::jlimit(0, 255, (signal - 12) * 5));
+                destination.setPixelColour(x, y, colour.withAlpha(alpha));
+            }
+        }
+
+        image = std::move(transparent);
+    }
+
+    void localiseAudioSelector(juce::Component& component)
+    {
+        if (auto* label = dynamic_cast<juce::Label*>(&component))
+        {
+            const auto text = label->getText();
+            if (text == "Output:")
+                label->setText(utf8("출력 장치"), juce::dontSendNotification);
+            else if (text == "Input:")
+                label->setText(utf8("입력 장치"), juce::dontSendNotification);
+            else if (text == "Active output channels:")
+                label->setText(utf8("사용할 출력 채널"), juce::dontSendNotification);
+            else if (text == "Active input channels:")
+                label->setText(utf8("사용할 입력 채널"), juce::dontSendNotification);
+            else if (text == "Sample rate:")
+                label->setText(utf8("샘플레이트"), juce::dontSendNotification);
+            else if (text == "Audio buffer size:")
+                label->setText(utf8("오디오 버퍼 크기"), juce::dontSendNotification);
+
+            label->setColour(juce::Label::textColourId, guitaru::green());
+        }
+        else if (auto* button = dynamic_cast<juce::TextButton*>(&component))
+        {
+            if (button->getButtonText() == "Test")
+                button->setButtonText(utf8("테스트"));
+        }
+
+        for (int i = 0; i < component.getNumChildComponents(); ++i)
+            localiseAudioSelector(*component.getChildComponent(i));
+    }
 }
 
 MainComponent::MainComponent()
 {
+    setLookAndFeel(&guitaruLookAndFeel);
+    logoImage = juce::ImageFileFormat::loadFrom(BinaryData::guitarulogocentered_png,
+                                                 BinaryData::guitarulogocentered_pngSize);
+    mascotImage = juce::ImageFileFormat::loadFrom(BinaryData::guitarumascot_png,
+                                                   BinaryData::guitarumascot_pngSize);
+    if (logoImage.isValid())
+        logoImage = logoImage.getClippedImage({ 210, 180, 1360, 520 })
+                            .rescaled(540, 206, juce::Graphics::highResamplingQuality);
+    if (mascotImage.isValid())
+        mascotImage = mascotImage.getClippedImage({ 260, 65, 860, 1100 })
+                                .rescaled(440, 590, juce::Graphics::highResamplingQuality);
+    removeImagePaper(logoImage);
+    removeImagePaper(mascotImage);
+
     std::unique_ptr<juce::XmlElement> savedAudioState;
     if (const auto settingsFile = getAudioSettingsFile(); settingsFile.existsAsFile())
         savedAudioState = juce::XmlDocument::parse(settingsFile);
@@ -29,16 +109,25 @@ MainComponent::MainComponent()
     setAudioChannels(8, 2, savedAudioState.get());
     deviceManager.addChangeListener(this);
 
-    statusLabel.setJustificationType(juce::Justification::centred);
-    addAndMakeVisible(statusLabel);
+    statusLabel.setJustificationType(juce::Justification::centredLeft);
+    statusLabel.setColour(juce::Label::textColourId, guitaru::inkMuted());
+    statusLabel.setFont(guitaru::chalkFont(18.0f));
+    // 장치명은 오디오 장치 설정 창에서만 보여준다.
+    addChildComponent(statusLabel);
     updateAudioDeviceStatus();
 
-    mode1Button.onClick = [this] { statusLabel.setText("Mode 1 selected (not implemented)", juce::dontSendNotification); };
+    mode1Button.setButtonText(utf8("MODE 1 · 보카로이드 · 준비 중"));
+    mode1Button.setEnabled(false);
+    mode1Button.setColour(juce::TextButton::buttonColourId, guitaru::paperDark());
+    mode1Button.setColour(juce::TextButton::textColourOffId, guitaru::inkMuted());
     mode2Button.onClick = [this] { showMode2(); };
+    mode2Button.setButtonText(utf8("MODE 2 · 기타 보코더  →"));
+    mode2Button.setColour(juce::TextButton::buttonColourId, guitaru::blue());
     addAndMakeVisible(mode1Button);
     addAndMakeVisible(mode2Button);
 
-    audioSettingsButton.setButtonText(utf8("오디오 장치 설정"));
+    audioSettingsButton.setButtonText(utf8("오디오 장치 설정  ⚙"));
+    audioSettingsButton.setColour(juce::TextButton::buttonColourId, guitaru::green());
     audioSettingsButton.onClick = [this] { showAudioSettings(); };
     addAndMakeVisible(audioSettingsButton);
 
@@ -61,15 +150,17 @@ MainComponent::MainComponent()
     {
         selectPitchShifterBackend(backend);
     };
+    mode2Screen.onBackRequested = [this] { showModeSelection(); };
     refreshChannelChoices();
     addChildComponent(mode2Screen);
 
-    // Mode2Screen의 컨트롤이 모두 들어가야 한다.
-    setSize(620, 860);
+    // 브랜드 랜딩과 두 열 대시보드가 답답하지 않게 보이는 기본 크기.
+    setSize(1120, 880);
 }
 
 MainComponent::~MainComponent()
 {
+    setLookAndFeel(nullptr);
     deviceManager.removeChangeListener(this);
     shutdownAudio();
     stopRecording();
@@ -80,6 +171,7 @@ void MainComponent::showMode2()
 {
     // 이전 캘리브레이션이 게인 상한을 낮게 잠근 상태로 남아 무음처럼 들리는 일을 막는다.
     mode2Controller.resetCalibration();
+    mode2Screen.showOverview();
     updateLatencyInfo();
     mode2Active = true;
     statusLabel.setVisible(false);
@@ -90,10 +182,28 @@ void MainComponent::showMode2()
     resized();
 }
 
+void MainComponent::showModeSelection()
+{
+    // 녹음 파일을 정상적으로 마감하고, 오디오 콜백은 mode2Active를 보고 즉시 무음으로
+    // 전환한다. 컨트롤러 설정은 유지해 같은 모드에 다시 들어왔을 때 이어서 쓸 수 있다.
+    stopRecording();
+    mode2Screen.setRecordingState(false);
+    mode2Active = false;
+    mode2Screen.setVisible(false);
+    statusLabel.setVisible(false);
+    mode1Button.setVisible(true);
+    mode2Button.setVisible(true);
+    audioSettingsButton.setVisible(true);
+    updateAudioDeviceStatus();
+    resized();
+    repaint();
+}
+
 void MainComponent::showAudioSettings()
 {
     auto* selector = new juce::AudioDeviceSelectorComponent(deviceManager, 1, 8, 1, 2, false, false, false, false);
     selector->setSize(500, 450);
+    localiseAudioSelector(*selector);
 
     juce::DialogWindow::LaunchOptions options;
     options.content.setOwned(selector);
@@ -444,7 +554,39 @@ void MainComponent::releaseResources()
 
 void MainComponent::paint(juce::Graphics& g)
 {
-    g.fillAll(getLookAndFeel().findColour(juce::ResizableWindow::backgroundColourId));
+    guitaru::drawPaperTexture(g, getLocalBounds(), 20260730);
+
+    if (mode2Active)
+        return;
+
+    const auto bounds = getLocalBounds().toFloat();
+    const float scale = juce::jlimit(0.72f, 1.0f, bounds.getWidth() / 1120.0f);
+
+    if (logoImage.isValid())
+    {
+        g.setOpacity(1.0f);
+        g.drawImage(logoImage,
+                    juce::roundToInt(58.0f * scale), juce::roundToInt(132.0f * scale),
+                    juce::roundToInt(540.0f * scale), juce::roundToInt(206.0f * scale),
+                    0, 0, logoImage.getWidth(), logoImage.getHeight(), false);
+    }
+
+    g.setColour(guitaru::green());
+    g.setFont(guitaru::chalkFont(29.0f * scale, true));
+    g.drawText(utf8("기타를 치면, 목소리가 따라와요."),
+               juce::Rectangle<float>(70.0f * scale, 365.0f * scale,
+                                      525.0f * scale, 40.0f * scale),
+               juce::Justification::centredLeft);
+
+    if (mascotImage.isValid())
+    {
+        g.setOpacity(1.0f);
+        g.drawImage(mascotImage,
+                    juce::roundToInt(625.0f * scale), juce::roundToInt(105.0f * scale),
+                    juce::roundToInt(440.0f * scale), juce::roundToInt(590.0f * scale),
+                    0, 0, mascotImage.getWidth(), mascotImage.getHeight(), false);
+    }
+
 }
 
 void MainComponent::resized()
@@ -457,12 +599,15 @@ void MainComponent::resized()
         return;
     }
 
-    area = area.reduced(20);
-    statusLabel.setBounds(area.removeFromTop(40));
-    area.removeFromTop(20);
-    mode1Button.setBounds(area.removeFromTop(40));
-    area.removeFromTop(10);
-    mode2Button.setBounds(area.removeFromTop(40));
-    area.removeFromTop(20);
-    audioSettingsButton.setBounds(area.removeFromTop(36));
+    const float scale = juce::jlimit(0.72f, 1.0f,
+                                     static_cast<float>(getWidth()) / 1120.0f);
+    const auto rect = [scale](float x, float y, float w, float h)
+    {
+        return juce::Rectangle<int>(juce::roundToInt(x * scale), juce::roundToInt(y * scale),
+                                    juce::roundToInt(w * scale), juce::roundToInt(h * scale));
+    };
+
+    mode1Button.setBounds(rect(70.0f, 475.0f, 330.0f, 52.0f));
+    mode2Button.setBounds(rect(70.0f, 542.0f, 330.0f, 60.0f));
+    audioSettingsButton.setBounds(rect(415.0f, 542.0f, 180.0f, 60.0f));
 }

@@ -78,9 +78,17 @@ juce_add_gui_app(VocalGuitarApp
     MICROPHONE_PERMISSION_TEXT "기타/보컬 입력을 처리하려면 마이크(오디오 인터페이스) 접근 권한이 필요합니다."
 )
 
+juce_add_binary_data(GuitaruAssets
+    SOURCES
+        assets/branding/guitaru-logo-centered.png
+        assets/branding/guitaru-mascot.png
+        assets/fonts/Gaegu-Bold.ttf
+)
+
 target_sources(VocalGuitarApp PRIVATE
     src/main/Main.cpp
     src/main/MainComponent.cpp
+    src/ui/GuitaruLookAndFeel.cpp
     src/core/dsp/OnsetDetector.cpp
     src/core/dsp/PitchDetector.cpp
     src/core/dsp/PitchStabilizer.cpp
@@ -110,6 +118,7 @@ target_compile_definitions(VocalGuitarApp
 
 target_link_libraries(VocalGuitarApp
     PRIVATE
+        GuitaruAssets
         juce::juce_audio_utils
         juce::juce_audio_devices
         juce::juce_dsp
