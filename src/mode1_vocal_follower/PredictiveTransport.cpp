@@ -217,10 +217,14 @@ bool PredictiveTransport::observeHarmonicOnset(
     const double scoreError = trustedScore - predictedScoreAtOnset;
     phaseErrorSeconds =
         -scoreError * performanceSecondsPerScoreSecond;
+    // VARIANT_B: the previous 0.12 gain / 20ms clamp could only remove a
+    // fraction of a 60-95ms phase error per confirmed onset, so a residual
+    // bias kept reappearing every cycle instead of being resolved. Correct
+    // most of the error in one shot instead.
     const double maximumScoreCorrection =
-        0.020 / performanceSecondsPerScoreSecond;
+        0.060 / performanceSecondsPerScoreSecond;
     scoreSeconds += std::clamp(
-        0.12 * scoreError,
+        0.35 * scoreError,
         -maximumScoreCorrection,
         maximumScoreCorrection);
 
