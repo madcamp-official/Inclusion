@@ -64,6 +64,10 @@ public:
     // Message-thread: UI actions.
     void requestSkip() noexcept;
     void requestRetry() noexcept;
+    // Ends the song stage immediately regardless of minimumSessionSeconds,
+    // for when the user wants to submit a shorter take instead of waiting
+    // for the floor. No-op outside the song stage's listening phase.
+    void requestFinishSongEarly() noexcept;
     // Called by the caller once it has finished saving/grading the item
     // that was flagged via awaitingFinalize. Advances to the next item or
     // stage and restarts the get-ready countdown.
@@ -142,7 +146,7 @@ private:
 
     static constexpr double countdownSeconds = 1.4;
     static constexpr double vowelItemMaxSeconds = 9.0;
-    static constexpr double minimumSessionSeconds = 180.0;
+    static constexpr double minimumSessionSeconds = 120.0;
     static constexpr double perWordMaxSecondsFactor = 2.4;
     static constexpr double perWordMaxSecondsBase = 5.0;
     // Sung syllables blend into each other, so per-syllable energy onsets

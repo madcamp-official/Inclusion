@@ -42,6 +42,10 @@ public:
     std::function<void()> onSkipRequested;
     std::function<void()> onCancelRequested;
     std::function<void()> onStartTrainingRequested;
+    // User wants to end the song stage now instead of waiting for the
+    // minimum-duration floor — offered as a separate, always-available
+    // escape hatch alongside the normal skip-to-next-line button.
+    std::function<void()> onFinishSongEarlyRequested;
 
     void paint(juce::Graphics& graphics) override;
     void resized() override;
@@ -58,6 +62,7 @@ private:
     juce::ProgressBar inputLevelBar { inputLevelValue };
     juce::TextButton retryButton { L"다시 말하기" };
     juce::TextButton skipButton { L"건너뛰기" };
+    juce::TextButton finishSongEarlyButton { L"지금 제출" };
     juce::TextButton cancelButton { L"세션 취소" };
     juce::TextButton startTrainingButton { L"목소리 재학습 시작" };
     juce::Label trainingStatusLabel;

@@ -36,6 +36,14 @@ RecordingSessionScreen::RecordingSessionScreen()
     };
     addAndMakeVisible(skipButton);
 
+    finishSongEarlyButton.onClick = [this]
+    {
+        if (onFinishSongEarlyRequested)
+            onFinishSongEarlyRequested();
+    };
+    finishSongEarlyButton.setVisible(false);
+    addAndMakeVisible(finishSongEarlyButton);
+
     cancelButton.onClick = [this]
     {
         if (onCancelRequested)
@@ -100,6 +108,17 @@ void RecordingSessionScreen::updateState(
                 && state.stageProgressSeconds >= state.stageProgressTargetSeconds
             ? L"전체 녹음 완료"
             : L"말했어요 · 다음");
+    const bool showFinishEarly =
+        !state.sessionFinished
+        && state.stage == voice_capture::GuidedRecordingStage::song
+        && state.stageProgressSeconds < state.stageProgressTargetSeconds;
+    if (showFinishEarly != finishSongEarlyButton.isVisible())
+    {
+        finishSongEarlyButton.setVisible(showFinishEarly);
+        resized();
+    }
+    finishSongEarlyButton.setEnabled(showFinishEarly);
+
     cancelButton.setEnabled(true);
     cancelButton.setButtonText(state.sessionFinished ? L"완료 · 돌아가기" : L"세션 취소");
 
@@ -129,6 +148,7 @@ void RecordingSessionScreen::updateCalibrationState(
     retryButton.setButtonText(failed ? L"다시 측정" : L"측정 중...");
     retryButton.setEnabled(failed);
     skipButton.setEnabled(false);
+    finishSongEarlyButton.setVisible(false);
     cancelButton.setEnabled(true);
     cancelButton.setButtonText(L"세션 취소");
     startTrainingButton.setVisible(false);
@@ -302,6 +322,12 @@ void RecordingSessionScreen::resized()
     startTrainingButton.setBounds(trainingRow.removeFromLeft(220).reduced(4, 2));
     trainingStatusLabel.setBounds(trainingRow.reduced(4, 2));
     footer.removeFromTop(6);
+    if (finishSongEarlyButton.isVisible())
+    {
+        auto finishEarlyRow = footer.removeFromTop(30);
+        finishSongEarlyButton.setBounds(finishEarlyRow.reduced(4, 2));
+        footer.removeFromTop(6);
+    }
     auto buttonRow = footer.removeFromTop(40);
     const int buttonWidth = buttonRow.getWidth() / 3;
     retryButton.setBounds(buttonRow.removeFromLeft(buttonWidth).reduced(6, 4));

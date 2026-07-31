@@ -9,20 +9,20 @@ bool PitchShifterEngine::isBackendAvailable(Backend backend)
     switch (backend)
     {
         case Backend::World:
-#if defined(HAVE_WORLD)
+#if HAVE_WORLD
             return true;
 #else
             return false;
 #endif
         case Backend::RubberBand:
         case Backend::RubberBandLowLatency:
-#if defined(HAVE_RUBBERBAND)
+#if HAVE_RUBBERBAND
             return true;
 #else
             return false;
 #endif
         case Backend::SoundTouch:
-#if defined(HAVE_SOUNDTOUCH)
+#if HAVE_SOUNDTOUCH
             return true;
 #else
             return false;
@@ -60,11 +60,11 @@ void PitchShifterEngine::prepare(double sampleRateIn, int maxBlockSize)
     sampleRate = sampleRateIn;
     latencySamples = 0;
 
-#if defined(HAVE_WORLD)
+#if HAVE_WORLD
     world.prepare(sampleRateIn, maxBlockSize);
 #endif
 
-#if defined(HAVE_RUBBERBAND)
+#if HAVE_RUBBERBAND
     using Stretcher = RubberBand::RubberBandStretcher;
     const bool useLowLatencyRubberBand =
         activeBackend == Backend::RubberBandLowLatency;
@@ -91,7 +91,7 @@ void PitchShifterEngine::prepare(double sampleRateIn, int maxBlockSize)
         useLowLatencyRubberBand ? static_cast<size_t>(maxBlockSize) : 0;
 #endif
 
-#if defined(HAVE_SOUNDTOUCH)
+#if HAVE_SOUNDTOUCH
     soundTouch.setSampleRate(static_cast<uint>(sampleRateIn));
     soundTouch.setChannels(1);
     soundTouch.setPitchSemiTones(0.0);
@@ -106,23 +106,23 @@ void PitchShifterEngine::prepare(double sampleRateIn, int maxBlockSize)
     soundTouchReceiveScratch.assign(static_cast<size_t>(maxBlockSize) * 4, 0.0f);
 #endif
 
-#if defined(HAVE_RUBBERBAND)
+#if HAVE_RUBBERBAND
     if ((activeBackend == Backend::RubberBand
          || activeBackend == Backend::RubberBandLowLatency)
         && rubberBand != nullptr)
         latencySamples = static_cast<int>(
             rubberBandStartDelaySamples + rubberBandSafetyDelaySamples);
 #endif
-#if defined(HAVE_WORLD)
+#if HAVE_WORLD
     if (activeBackend == Backend::World)
         latencySamples = world.getLatencySamples();
 #endif
-#if defined(HAVE_SOUNDTOUCH)
+#if HAVE_SOUNDTOUCH
     if (activeBackend == Backend::SoundTouch)
         latencySamples = soundTouch.getSetting(SETTING_INITIAL_LATENCY);
 #endif
 
-#if !defined(HAVE_RUBBERBAND) && !defined(HAVE_SOUNDTOUCH)
+#if !HAVE_RUBBERBAND && !HAVE_SOUNDTOUCH
     (void) maxBlockSize;
 #endif
 
@@ -133,7 +133,7 @@ void PitchShifterEngine::reset()
 {
     currentShiftSemitones = 0.0f;
 
-#if defined(HAVE_RUBBERBAND)
+#if HAVE_RUBBERBAND
     if (rubberBand != nullptr)
     {
         rubberBand->reset();
@@ -176,12 +176,12 @@ void PitchShifterEngine::reset()
     }
 #endif
 
-#if defined(HAVE_SOUNDTOUCH)
+#if HAVE_SOUNDTOUCH
     soundTouch.clear();
     soundTouchOutputQueue.clear();
 #endif
 
-#if defined(HAVE_WORLD)
+#if HAVE_WORLD
     world.reset();
 #endif
 }
@@ -200,7 +200,7 @@ void PitchShifterEngine::processBlock(const float* input, float* output, int num
     else
         currentShiftSemitones = requestedSemitones;
 
-#if defined(HAVE_WORLD)
+#if HAVE_WORLD
     if (activeBackend == Backend::World)
     {
         world.processBlock(input, output, numSamples, absoluteTargetF0Hz,
@@ -209,7 +209,7 @@ void PitchShifterEngine::processBlock(const float* input, float* output, int num
     }
 #endif
 
-#if defined(HAVE_RUBBERBAND)
+#if HAVE_RUBBERBAND
     if ((activeBackend == Backend::RubberBand
          || activeBackend == Backend::RubberBandLowLatency)
         && rubberBand != nullptr)
@@ -219,7 +219,7 @@ void PitchShifterEngine::processBlock(const float* input, float* output, int num
     }
 #endif
 
-#if defined(HAVE_SOUNDTOUCH)
+#if HAVE_SOUNDTOUCH
     if (activeBackend == Backend::SoundTouch)
     {
         processSoundTouch(input, output, numSamples);
@@ -232,7 +232,7 @@ void PitchShifterEngine::processBlock(const float* input, float* output, int num
 
 void PitchShifterEngine::processRubberBand(const float* input, float* output, int numSamples)
 {
-#if defined(HAVE_RUBBERBAND)
+#if HAVE_RUBBERBAND
     rubberBand->setPitchScale(std::pow(2.0, static_cast<double>(currentShiftSemitones) / 12.0));
     const float* inputs[] = { input };
     rubberBand->process(inputs, static_cast<size_t>(numSamples), false);
@@ -294,7 +294,7 @@ void PitchShifterEngine::processRubberBand(const float* input, float* output, in
 
 void PitchShifterEngine::processSoundTouch(const float* input, float* output, int numSamples)
 {
-#if defined(HAVE_SOUNDTOUCH)
+#if HAVE_SOUNDTOUCH
     soundTouch.setPitchSemiTones(static_cast<double>(currentShiftSemitones));
     soundTouch.putSamples(input, static_cast<uint>(numSamples));
 

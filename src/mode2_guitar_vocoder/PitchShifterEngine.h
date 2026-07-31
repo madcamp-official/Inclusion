@@ -7,15 +7,15 @@
 #include <memory>
 #include <vector>
 
-#if defined(HAVE_RUBBERBAND)
+#if HAVE_RUBBERBAND
 #include <rubberband/RubberBandStretcher.h>
 #endif
 
-#if defined(HAVE_SOUNDTOUCH)
+#if HAVE_SOUNDTOUCH
 #include <SoundTouch.h>
 #endif
 
-#if defined(HAVE_WORLD)
+#if HAVE_WORLD
 #include "WorldRealtimePitchShifter.h"
 #endif
 
@@ -63,7 +63,7 @@ private:
     float currentShiftSemitones = 0.0f;
     std::atomic<float> glideSemitonesPerSecond { mode2::params::defaultGlideSemitonesPerSecond };
 
-#if defined(HAVE_RUBBERBAND)
+#if HAVE_RUBBERBAND
     std::unique_ptr<RubberBand::RubberBandStretcher> rubberBand;
     std::deque<float> rubberBandOutputQueue;
     std::vector<float> rubberBandReceiveScratch;
@@ -75,7 +75,7 @@ private:
     float lastRubberBandOutputSample = 0.0f;
 #endif
 
-#if defined(HAVE_SOUNDTOUCH)
+#if HAVE_SOUNDTOUCH
     soundtouch::SoundTouch soundTouch;
     // SoundTouch는 WSOLA 처리 특성상 넣은 만큼 즉시 나오지 않으므로(초기 지연 존재),
     // 받은 샘플을 큐에 모아뒀다가 블록 크기만큼만 꺼내 쓴다.
@@ -83,13 +83,13 @@ private:
     std::vector<float> soundTouchReceiveScratch;
 #endif
 
-#if defined(HAVE_WORLD)
+#if HAVE_WORLD
     WorldRealtimePitchShifter world;
 #endif
 
-#if defined(HAVE_RUBBERBAND)
+#if HAVE_RUBBERBAND
     Backend activeBackend = Backend::RubberBand;
-#elif defined(HAVE_SOUNDTOUCH)
+#elif HAVE_SOUNDTOUCH
     Backend activeBackend = Backend::SoundTouch;
 #else
     Backend activeBackend = Backend::World;

@@ -604,6 +604,10 @@ MainComponent::MainComponent()
     {
         guidedRecordingSession.requestSkip();
     };
+    recordingSessionScreen.onFinishSongEarlyRequested = [this]
+    {
+        guidedRecordingSession.requestFinishSongEarly();
+    };
     recordingSessionScreen.onCancelRequested = [this]
     {
         cancelGuidedRecordingSession();

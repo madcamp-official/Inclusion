@@ -289,6 +289,15 @@ void GuidedRecordingSession::requestSkip() noexcept
     advanceToNextItemLocked();
 }
 
+void GuidedRecordingSession::requestFinishSongEarly() noexcept
+{
+    const juce::SpinLock::ScopedLockType scopedLock(lock);
+    if (!active || stage != GuidedRecordingStage::song || phase != ItemPhase::listening)
+        return;
+
+    phase = ItemPhase::awaitingFinalize;
+}
+
 void GuidedRecordingSession::requestRetry() noexcept
 {
     const juce::SpinLock::ScopedLockType scopedLock(lock);
