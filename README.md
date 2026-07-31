@@ -41,6 +41,21 @@ tools/mode2-setup.sh airpods    # 또는 speakers, builtin
 모드 2의 WORLD 실시간 하이브리드와 동일 녹음 A/B 방법은
 [WORLD / Rubber Band / SoundTouch A/B](docs/pitch-shifter-ab.md)를 참고하세요.
 
+## 목소리 프로필 학습 (Mode 1)
+
+Mode 1은 사용자 본인 목소리로 보컬을 생성하기 위해, 짧은 안내형 녹음
+세션으로 음성 프로필을 만들고 그 데이터로 모델을 학습합니다.
+
+- 진행 단계: 말하기 → 모음 지속 발성 → 노래 (3단계, 자동 진행)
+- 노래 단계는 최소 2분(120초)까지 이어서 녹음합니다. 그 전에 끝내고
+  싶으면 화면의 "지금 제출" 버튼으로 바로 종료할 수 있습니다.
+- 세션이 끝나면 화면에서 바로 모델 학습을 시작할 수 있고, 학습에는
+  약 8분이 걸립니다.
+- 상세 사양은
+  [`docs/안내형_음성프로필_생성_사양서.md`](docs/안내형_음성프로필_생성_사양서.md)를
+  참고하세요. 최소 녹음 길이 등 일부 수치는 실제 구현과 다를 수 있으니
+  최종 기준은 `src/voice_capture/GuidedRecordingSession.h`를 따릅니다.
+
 ## Local-only data
 
 사용자 녹음, 분리된 원곡 보컬, RVC/Seed-VC 모델, Python 가상환경,
