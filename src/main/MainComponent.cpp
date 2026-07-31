@@ -581,7 +581,9 @@ MainComponent::MainComponent()
     mode1Panel.addAndMakeVisible(profileProgressBar);
 
     profileProgressLabel.setText(
-        L"유효 음성 0초 / 최소 180초 · 통과 클립 0개",
+        L"유효 음성 0초 / 최소 "
+            + juce::String(voice_capture::minimumTrainingSeconds, 0)
+            + L"초 · 통과 클립 0개",
         juce::dontSendNotification);
     mode1Panel.addAndMakeVisible(profileProgressLabel);
 
@@ -2208,11 +2210,14 @@ void MainComponent::startVoiceModelTraining()
         return;
     if (profileDirectory == juce::File() || !profileDirectory.isDirectory())
         return;
-    if (acceptedClipCount == 0 || acceptedDurationSeconds < 180.0)
+    if (acceptedClipCount == 0
+        || acceptedDurationSeconds < voice_capture::minimumTrainingSeconds)
     {
         guidedStatusIsError = true;
         guidedStatusMessage =
-            L"재학습하려면 통과한 음성이 최소 180초 필요합니다. 현재 "
+            L"재학습하려면 통과한 음성이 최소 "
+            + juce::String(voice_capture::minimumTrainingSeconds, 0)
+            + L"초 필요합니다. 현재 "
             + juce::String(acceptedDurationSeconds, 0) + L"초입니다.";
         return;
     }
@@ -2378,8 +2383,12 @@ void MainComponent::finalizeGuidedItem(const voice_capture::GuidedRecordingState
     voiceRecorder.stop();
 
     auto quality = voiceRecorder.getQuality();
+    // A long continuous song take is worth keeping even when the aggregate
+    // quality numbers come out mediocre. The length bar tracks the song
+    // stage's own floor, so a take that ran the stage to completion always
+    // qualifies rather than needing half again as much audio.
     const bool usableContinuousTake =
-        quality.durationSeconds >= 180.0
+        quality.durationSeconds >= voice_capture::minimumTrainingSeconds
         && quality.activeSpeechSeconds >= 30.0
         && quality.clippingRatio <= 0.05f;
     if (!quality.passed && usableContinuousTake)
@@ -2439,11 +2448,14 @@ void MainComponent::finalizeGuidedItem(const voice_capture::GuidedRecordingState
 
     ++acceptedClipCount;
     acceptedDurationSeconds += quality.durationSeconds;
-    profileProgressValue =
-        juce::jlimit(0.0, 1.0, acceptedDurationSeconds / 180.0);
+    profileProgressValue = juce::jlimit(
+        0.0, 1.0,
+        acceptedDurationSeconds / voice_capture::minimumTrainingSeconds);
     profileProgressLabel.setText(
         L"유효 음성 " + juce::String(acceptedDurationSeconds, 0)
-            + L"초 / 최소 180초 · 통과 클립 "
+            + L"초 / 최소 "
+            + juce::String(voice_capture::minimumTrainingSeconds, 0)
+            + L"초 · 통과 클립 "
             + juce::String(acceptedClipCount) + L"개",
         juce::dontSendNotification);
     writeManifestEntry(rawFile, lastReferenceFile, quality, reduceNoise);
@@ -2606,7 +2618,8 @@ void MainComponent::timerCallback()
         {
             if (!trainingRequestedForSession
                 && acceptedClipCount > 0
-                && acceptedDurationSeconds >= 180.0)
+                && acceptedDurationSeconds
+                       >= voice_capture::minimumTrainingSeconds)
             {
                 guidedStatusMessage =
                     L"녹음 파일 저장 완료 · 재학습을 자동으로 시작합니다.";
@@ -2639,10 +2652,14 @@ void MainComponent::timerCallback()
                 trainingFinished,
                 trainingSucceeded,
                 !trainingRequestedForSession
-                        && acceptedDurationSeconds < 180.0
+                        && acceptedDurationSeconds
+                               < voice_capture::minimumTrainingSeconds
                     ? L"재학습까지 "
                         + juce::String(
-                            juce::jmax(0.0, 180.0 - acceptedDurationSeconds),
+                            juce::jmax(
+                                0.0,
+                                voice_capture::minimumTrainingSeconds
+                                    - acceptedDurationSeconds),
                             0)
                         + L"초의 통과 음성이 더 필요합니다."
                     : voiceModelTrainer.getLatestStatusLine());

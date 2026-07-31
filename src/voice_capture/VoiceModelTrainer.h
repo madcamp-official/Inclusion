@@ -7,6 +7,13 @@
 namespace voice_capture
 {
 
+// Total accepted audio the prepare step demands before a retrain is allowed
+// to start. Kept in step with GuidedRecordingSession's 120s song-stage floor:
+// a user who sings the full song stage (or finishes it early) plus the
+// speaking and vowel takes must end up above this, or the guided flow would
+// send them to a prepare-step failure it had already let them walk into.
+constexpr double minimumTrainingSeconds = 120.0;
+
 // Runs the local prepare_voice_training_dataset.py + GPU
 // train_rvc_voice.py scripts (see tools/mode1_song_package/) on a
 // background thread so the guided recording flow can offer one-click

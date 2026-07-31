@@ -176,7 +176,7 @@ void VoiceModelTrainer::run()
         "--output",
         combinedWav.getFullPathName(),
         "--minimum-duration-seconds",
-        "180",
+        juce::String(minimumTrainingSeconds, 0),
     };
 
     if (!runStep(L"데이터 준비", prepareArgs))
